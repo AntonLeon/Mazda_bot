@@ -1,1 +1,48 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+
+# Data files
+*.json
+!requirements.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Secrets
 .env
+.env.*
+*.key.env
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+
+# Data files
+*.json
+!requirements.json  # если нужен какой-то конкретный json
+
+# Python cache
+__pycache__/
+*.pyc

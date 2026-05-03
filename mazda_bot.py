@@ -496,7 +496,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     payload = {
-        "model": "openrouter/auto",
+        "model": "openrouter/free",
         "messages": messages,
         "temperature": 0.7,
         "max_tokens": 1000,
