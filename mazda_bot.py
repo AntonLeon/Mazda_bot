@@ -174,7 +174,8 @@ def main_menu():
         [InlineKeyboardButton("📞 Связаться с мастером", callback_data="contact_master")],
         [InlineKeyboardButton("❓ FAQ", callback_data="faq")],
         [InlineKeyboardButton("🔧 Что нужно", callback_data="what_need")],
-        [InlineKeyboardButton("💬 Чат с ИИ", callback_data="ai_chat")]
+        [InlineKeyboardButton("💬 Чат с ИИ", callback_data="ai_chat")],
+        [InlineKeyboardButton("👥 Вступить в группу", callback_data="join_group")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -229,6 +230,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(
             "👋 ГЛАВНОЕ МЕНЮ\n\nВыберите действие:",
             reply_markup=main_menu()
+        )
+        return
+    
+    # ===== ВСТУПИТЬ В ГРУППУ =====
+    if query.data == "join_group":
+        # Ссылка-приглашение в группу @MazdaAlex
+        invite_link = "https://t.me/MazdaAlex"
+        
+        await query.message.edit_text(
+            "👥 ВСТУПИТЬ В ГРУППУ\n\n"
+            "Нажмите на ссылку ниже, чтобы присоединиться к нашему чату:\n\n"
+            f"🔗 {invite_link}\n\n"
+            "После нажатия на ссылку:\n"
+            "1️⃣ Вы перейдёте в Telegram\n"
+            "2️⃣ Нажмите 'Присоединиться'\n"
+            "3️⃣ Отправьте заявку на вступление\n\n"
+            "Администратор рассмотрит вашу заявку и примет в группу.\n\n"
+            "Добро пожаловать в наше сообщество! 🚗",
+            reply_markup=back_button(),
+            disable_web_page_preview=False
         )
         return
     
@@ -486,7 +507,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(bot_answer, reply_markup=main_menu())
         return
     
-    # 3. ЕСЛИ НЕ НАШЛИ - ОТПРАВЛЯЕМ В ИИ
+    # 3. ЕСЛИ НЕ НАШЛИ - ОТПРАВЛЯЕМ В ИИ (с перебором бесплатных моделей)
     add_to_history(user_id, "user", original_message)
     messages = get_user_history(user_id)
     
@@ -495,42 +516,60 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Content-Type": "application/json",
     }
     
-    payload = {
-        "model": "openrouter/free",
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 1000,
-    }
+    # Список бесплатных моделей для fallback
+    FREE_MODELS = [
+        "google/gemini-2.0-flash-exp:free",
+        "mistralai/mistral-7b-instruct:free", 
+        "meta-llama/llama-3.1-8b-instruct:free",
+        "qwen/qwen-2.5-7b-instruct:free"
+    ]
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    bot_reply = result['choices'][0]['message']['content']
-                    add_to_history(user_id, "assistant", bot_reply)
-                    await update.message.reply_text(bot_reply, reply_markup=main_menu())
-                else:
-                    error_text = await response.text()
-                    logger.error(f"OpenRouter error {response.status}: {error_text}")
-                    await update.message.reply_text(
-                        "⚠️ Ошибка API. Попробуйте позже.",
-                        reply_markup=main_menu()
-                    )
-    except asyncio.TimeoutError:
+    # Пробуем каждую модель по очереди
+    bot_reply = None
+    last_error = None
+    
+    for model in FREE_MODELS:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1000,
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=60
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        bot_reply = result['choices'][0]['message']['content']
+                        print(f"✅ ИИ ответил через модель: {model}")
+                        break
+                    else:
+                        error_text = await response.text()
+                        logger.warning(f"⚠️ Модель {model} ошибка {response.status}: {error_text[:100]}")
+                        last_error = f"Модель {model} вернула ошибку {response.status}"
+                        continue
+        except asyncio.TimeoutError:
+            logger.warning(f"⏰ Таймаут модели {model}")
+            last_error = f"Модель {model} не отвечает (таймаут)"
+            continue
+        except Exception as e:
+            logger.warning(f"❌ Модель {model} исключение: {e}")
+            last_error = str(e)
+            continue
+    
+    if bot_reply:
+        add_to_history(user_id, "assistant", bot_reply)
+        await update.message.reply_text(bot_reply, reply_markup=main_menu())
+    else:
         await update.message.reply_text(
-            "⏰ Нейросеть не отвечает. Попробуйте позже.",
-            reply_markup=main_menu()
-        )
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(
-            "⚠️ Ошибка. Попробуйте ещё раз.",
+            f"⚠️ Извините, ИИ временно недоступен.\n\n"
+            f"Попробуйте позже или задайте вопрос иначе.",
             reply_markup=main_menu()
         )
 
@@ -551,6 +590,7 @@ def main():
     print("📞 СВЯЗЬ: через кнопку 'Связаться с мастером'")
     print("📚 БАЗА ЗНАНИЙ: быстрые ответы на частые вопросы")
     print("💰 ЦЕНА: фиксированная - 1500₽ за любые опции")
+    print("👥 ГРУППА: кнопка 'Вступить в группу'")
     print("=" * 40)
     
     master_ids = get_master_ids()
