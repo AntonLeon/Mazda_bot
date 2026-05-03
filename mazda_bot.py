@@ -235,7 +235,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ===== ВСТУПИТЬ В ГРУППУ =====
     if query.data == "join_group":
-        # Ссылка-приглашение в группу @MazdaAlex
         invite_link = "https://t.me/MazdaAlex"
         
         await query.message.edit_text(
@@ -511,20 +510,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_to_history(user_id, "user", original_message)
     messages = get_user_history(user_id)
     
+    # ОБЯЗАТЕЛЬНЫЕ ЗАГОЛОВКИ ДЛЯ FREE-МОДЕЛЕЙ OPENROUTER
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/mazda_cx5_bot",
+        "X-Title": "Mazda CX-5 Assistant Bot"
     }
     
-    # Список бесплатных моделей для fallback
+    # Список бесплатных моделей: сначала роутер, затем конкретные
     FREE_MODELS = [
-        "google/gemini-2.0-flash-exp:free",
-        "mistralai/mistral-7b-instruct:free", 
-        "meta-llama/llama-3.1-8b-instruct:free",
-        "qwen/qwen-2.5-7b-instruct:free"
+        "openrouter/free",
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-super:free",
+        "openai/gpt-oss-20b:free",
     ]
     
-    # Пробуем каждую модель по очереди
     bot_reply = None
     last_error = None
     
