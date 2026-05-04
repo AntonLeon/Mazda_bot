@@ -22,13 +22,16 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # оставляем для совместимости, но не используем
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 MASTER_IDS = os.getenv("MASTER_IDS", "")
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
-if not OPENROUTER_API_KEY:
-    raise ValueError("❌ OPENROUTER_API_KEY не найден в .env файле!")
+# YandexGPT не обязателен, если его нет - ИИ не будет работать
+if not YANDEX_FOLDER_ID or not YANDEX_API_KEY:
+    print("⚠️ ВНИМАНИЕ: YandexGPT не настроен! Добавьте YANDEX_FOLDER_ID и YANDEX_API_KEY в .env")
 
 print("✅ Бот запускается...")
 
@@ -506,71 +509,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(bot_answer, reply_markup=main_menu())
         return
     
-    # 3. ЕСЛИ НЕ НАШЛИ - ОТПРАВЛЯЕМ В ИИ (с перебором бесплатных моделей)
+    # 3. ЕСЛИ НЕ НАШЛИ - ОТПРАВЛЯЕМ В YandexGPT
     add_to_history(user_id, "user", original_message)
     messages = get_user_history(user_id)
     
-    # ОБЯЗАТЕЛЬНЫЕ ЗАГОЛОВКИ ДЛЯ FREE-МОДЕЛЕЙ OPENROUTER
+    # Проверяем, настроен ли YandexGPT
+    if not YANDEX_FOLDER_ID or not YANDEX_API_KEY:
+        await update.message.reply_text(
+            "⚠️ ИИ временно недоступен. Пожалуйста, сообщите администратору.",
+            reply_markup=main_menu()
+        )
+        return
+    
+    # Заголовки для YandexGPT
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Api-Key {YANDEX_API_KEY}",
+        "x-folder-id": YANDEX_FOLDER_ID,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/mazda_cx5_bot",
-        "X-Title": "Mazda CX-5 Assistant Bot"
     }
     
-    # Список бесплатных моделей: сначала роутер, затем конкретные
-    FREE_MODELS = [
-        "openrouter/free",
-        "google/gemma-4-31b-it:free",
-        "nvidia/nemotron-3-super:free",
-        "openai/gpt-oss-20b:free",
-    ]
+    # Преобразуем историю в формат YandexGPT (используем 'text' вместо 'content')
+    yandex_messages = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        # YandexGPT использует 'text' вместо 'content'
+        yandex_messages.append({"role": role, "text": content})
     
-    bot_reply = None
-    last_error = None
-    
-    for model in FREE_MODELS:
-        payload = {
-            "model": model,
-            "messages": messages,
+    # Формируем запрос
+    payload = {
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest",
+        "completionOptions": {
+            "stream": False,
             "temperature": 0.7,
-            "max_tokens": 1000,
-        }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        bot_reply = result['choices'][0]['message']['content']
-                        print(f"✅ ИИ ответил через модель: {model}")
-                        break
-                    else:
-                        error_text = await response.text()
-                        logger.warning(f"⚠️ Модель {model} ошибка {response.status}: {error_text[:100]}")
-                        last_error = f"Модель {model} вернула ошибку {response.status}"
-                        continue
-        except asyncio.TimeoutError:
-            logger.warning(f"⏰ Таймаут модели {model}")
-            last_error = f"Модель {model} не отвечает (таймаут)"
-            continue
-        except Exception as e:
-            logger.warning(f"❌ Модель {model} исключение: {e}")
-            last_error = str(e)
-            continue
+            "maxTokens": "1000"
+        },
+        "messages": yandex_messages
+    }
     
-    if bot_reply:
-        add_to_history(user_id, "assistant", bot_reply)
-        await update.message.reply_text(bot_reply, reply_markup=main_menu())
-    else:
+    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload, timeout=60) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    bot_reply = result['result']['alternatives'][0]['message']['text']
+                    print(f"✅ Ответ получен от YandexGPT")
+                    add_to_history(user_id, "assistant", bot_reply)
+                    await update.message.reply_text(bot_reply, reply_markup=main_menu())
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Ошибка YandexGPT {response.status}: {error_text[:200]}")
+                    await update.message.reply_text(
+                        "⚠️ Извините, ИИ временно недоступен. Попробуйте позже.",
+                        reply_markup=main_menu()
+                    )
+    except asyncio.TimeoutError:
         await update.message.reply_text(
-            f"⚠️ Извините, ИИ временно недоступен.\n\n"
-            f"Попробуйте позже или задайте вопрос иначе.",
+            "⏰ Нейросеть не отвечает. Попробуйте позже.",
+            reply_markup=main_menu()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(
+            "⚠️ Ошибка. Попробуйте ещё раз.",
             reply_markup=main_menu()
         )
 
