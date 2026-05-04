@@ -22,16 +22,16 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # оставляем для совместимости, но не используем
 YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 MASTER_IDS = os.getenv("MASTER_IDS", "")
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
-# YandexGPT не обязателен, если его нет - ИИ не будет работать
+
 if not YANDEX_FOLDER_ID or not YANDEX_API_KEY:
     print("⚠️ ВНИМАНИЕ: YandexGPT не настроен! Добавьте YANDEX_FOLDER_ID и YANDEX_API_KEY в .env")
+    print("   Бот будет работать без функций ИИ")
 
 print("✅ Бот запускается...")
 
