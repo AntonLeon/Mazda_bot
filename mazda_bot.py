@@ -128,6 +128,7 @@ async def notify_masters(message_type, data):
         text += f"📅 Дата: {data.get('date', '-')}\n"
         text += f"⏰ Время: {data.get('time', '-')}\n"
         text += f"🚗 Авто: {data.get('car_info', '-')}\n"
+        text += f"🔧 Стоимость: {data.get('price', '-')}\n"
         text += f"🔧 Опции: {data.get('features', '-')}\n"
         text += f"🆔 User ID: {data.get('user_id')}"
     elif message_type == "contact":
@@ -174,6 +175,7 @@ def main_menu():
         [InlineKeyboardButton("🔓 Скрытые опции", callback_data="hidden_features")],
         [InlineKeyboardButton("💰 Стоимость", callback_data="price")],
         [InlineKeyboardButton("📅 Записаться", callback_data="booking")],
+        [InlineKeyboardButton("🇷🇺 Русификация панели", callback_data="russian_localization")],
         [InlineKeyboardButton("📞 Связаться с мастером", callback_data="contact_master")],
         [InlineKeyboardButton("❓ FAQ", callback_data="faq")],
         [InlineKeyboardButton("🔧 Что нужно", callback_data="what_need")],
@@ -255,6 +257,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # ===== РУСИФИКАЦИЯ ПАНЕЛИ =====
+    if query.data == "russian_localization":
+        text = (
+            "🇷🇺 **РУСИФИКАЦИЯ ПРИБОРНОЙ ПАНЕЛИ**\n\n"
+            "▸ Полная русификация приборной панели (меню, сообщения, предупреждения)\n"
+            "▸ Корректное отображение кириллицы на всех экранах\n"
+            "💰 **Стоимость: 35 000 ₽**\n\n"
+            "🕐 Время работы: 30-50 минут\n\n"
+            "Для записи нажмите кнопку ниже 👇"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📅 Записаться на русификацию", callback_data="booking_russian")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_main")]
+        ]
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
+    
+    if query.data == "booking_russian":
+        pending_bookings[user_id] = {
+            "service": "Русификация панели",
+            "price": "35 000 ₽",
+            "step": "awaiting_name"
+        }
+        await query.message.edit_text(
+            "🇷🇺 **ЗАПИСЬ НА РУСИФИКАЦИЮ**\n\n"
+            "Стоимость услуги: 35 000 ₽\n\n"
+            "Напишите **ВАШЕ ИМЯ**:",
+            reply_markup=back_button(),
+            parse_mode="Markdown"
+        )
+        return
+    
     # ===== СКРЫТЫЕ ОПЦИИ =====
     if query.data == "hidden_features":
         await query.message.edit_text(get_all_features_text(), reply_markup=features_menu())
@@ -269,24 +304,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ===== СТОИМОСТЬ =====
     if query.data == "price":
-        text = f"💰 СТОИМОСТЬ АКТИВАЦИИ:\n\n"
-        text += f"• Активация любого количества опций — {PRICES['single']}\n"
-        text += f"• Повторное обращение (отключение/включение других опций) — {PRICES['repeated']}\n\n"
+        text = f"💰 **СТОИМОСТЬ УСЛУГ:**\n\n"
+        text += f"• Активация скрытых опций — {PRICES['single']}\n"
+        text += f"• Повторное обращение — {PRICES['repeated']}\n"
+        text += f"• 🇷🇺 Русификация приборной панели — **35 000 ₽**\n\n"
         text += "При повторном обращении цена снижается, так как вы оплатили основную работу"
-        await query.message.edit_text(text, reply_markup=back_button())
+        await query.message.edit_text(text, reply_markup=back_button(), parse_mode="Markdown")
         return
     
-    # ===== ЗАПИСЬ =====
+    # ===== ЗАПИСЬ (обычная) =====
     if query.data == "booking":
         await query.message.edit_text(
-            "📅 ЗАПИСЬ НА АКТИВАЦИЮ\n\nВыберите дату:",
-            reply_markup=booking_menu()
+            "📅 **ЗАПИСЬ НА АКТИВАЦИЮ**\n\nВыберите дату:",
+            reply_markup=booking_menu(),
+            parse_mode="Markdown"
         )
         return
     
     if query.data == "book_today":
         pending_bookings[user_id] = {
             "date": datetime.now().strftime("%d.%m.%Y"),
+            "service": "Активация скрытых опций",
+            "price": PRICES['single'],
             "step": "awaiting_name"
         }
         await query.message.edit_text(
@@ -299,6 +338,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "book_tomorrow":
         pending_bookings[user_id] = {
             "date": (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y"),
+            "service": "Активация скрытых опций",
+            "price": PRICES['single'],
             "step": "awaiting_name"
         }
         await query.message.edit_text(
@@ -311,6 +352,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "book_date":
         pending_bookings[user_id] = {
             "date": "custom",
+            "service": "Активация скрытых опций",
+            "price": PRICES['single'],
             "step": "awaiting_date"
         }
         await query.message.edit_text(
@@ -412,8 +455,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_booking(data)
             await notify_masters("booking", data)
             
+            service_text = data.get("service", "Активация опций")
+            price_text = data.get("price", PRICES['single'])
+            
             await update.message.reply_text(
                 f"✅ ЗАПИСЬ ОТПРАВЛЕНА!\n\n"
+                f"📋 Услуга: {service_text}\n"
+                f"💰 Стоимость: {price_text}\n"
                 f"📅 Дата: {data['date']}\n"
                 f"⏰ Время: {data['time']}\n"
                 f"👤 Имя: {data['name']}\n\n"
@@ -594,6 +642,7 @@ def main():
     print("📞 СВЯЗЬ: через кнопку 'Связаться с мастером'")
     print("📚 БАЗА ЗНАНИЙ: быстрые ответы на частые вопросы")
     print("💰 ЦЕНА: фиксированная - 1500₽ за любые опции")
+    print("🇷🇺 РУСИФИКАЦИЯ: отдельная услуга - 35 000 ₽")
     print("👥 ГРУППА: кнопка 'Вступить в группу'")
     print("=" * 40)
     
