@@ -128,7 +128,7 @@ async def notify_masters(message_type, data):
         text += f"📅 Дата: {data.get('date', '-')}\n"
         text += f"⏰ Время: {data.get('time', '-')}\n"
         text += f"🚗 Авто: {data.get('car_info', '-')}\n"
-        text += f"🔧 Стоимость: {data.get('price', '-')}\n"
+        text += f"💰 Стоимость: {data.get('price', '-')}\n"
         text += f"🔧 Опции: {data.get('features', '-')}\n"
         text += f"🆔 User ID: {data.get('user_id')}"
     elif message_type == "contact":
@@ -385,8 +385,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ===== ЧАТ С ИИ =====
     if query.data == "ai_chat":
+        # Очищаем все ожидающие состояния пользователя
+        if user_id in pending_bookings:
+            del pending_bookings[user_id]
+        if user_id in pending_contact:
+            del pending_contact[user_id]
         if user_id in user_histories:
             del user_histories[user_id]
+        
         await query.message.edit_text(
             "💬 ЧАТ С ИИ-ПОМОЩНИКОМ\n\n"
             "✅ ТЕПЕРЬ ВЫ МОЖЕТЕ ПРОСТО ПИСАТЬ СООБЩЕНИЯ\n\n"
