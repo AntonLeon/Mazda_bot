@@ -15,23 +15,21 @@ from telegram.ext import (
 from search_utils import search_web, search_web_fallback
 from bot_knowledge import (
     HIDDEN_FEATURES, FAQ, PRICES, WHAT_YOU_NEED,
-    check_knowledge_base, get_all_features_text, get_faq_text
+    check_knowledge_base, get_all_features_text, get_faq_text,
+    get_russian_localization_text
 )
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
-YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 MASTER_IDS = os.getenv("MASTER_IDS", "")
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
-
-if not YANDEX_FOLDER_ID or not YANDEX_API_KEY:
-    print("⚠️ ВНИМАНИЕ: YandexGPT не настроен! Добавьте YANDEX_FOLDER_ID и YANDEX_API_KEY в .env")
-    print("   Бот будет работать без функций ИИ")
+if not NVIDIA_API_KEY:
+    raise ValueError("❌ NVIDIA_API_KEY не найден в .env файле!")
 
 print("✅ Бот запускается...")
 
@@ -259,20 +257,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ===== РУСИФИКАЦИЯ ПАНЕЛИ =====
     if query.data == "russian_localization":
-        text = (
-            "🇷🇺 **РУСИФИКАЦИЯ ПРИБОРНОЙ ПАНЕЛИ**\n\n"
-            "▸ Полная русификация приборной панели (меню, сообщения, предупреждения)\n"
-            "▸ Корректное отображение кириллицы на всех экранах\n"
-            "💰 **Стоимость: 35 000 ₽**\n\n"
-            "🕐 Время работы: 30-50 минут\n\n"
-            "Для записи нажмите кнопку ниже 👇"
-        )
+        text = get_russian_localization_text()
         
         keyboard = [
             [InlineKeyboardButton("📅 Записаться на русификацию", callback_data="booking_russian")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_main")]
         ]
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown", disable_web_page_preview=False)
         return
     
     if query.data == "booking_russian":
@@ -563,58 +554,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(bot_answer, reply_markup=main_menu())
         return
     
-    # 3. ЕСЛИ НЕ НАШЛИ - ОТПРАВЛЯЕМ В YandexGPT
+    # 3. ЕСЛИ НЕ НАШЛИ - ОТПРАВЛЯЕМ В NVIDIA NIM
     add_to_history(user_id, "user", original_message)
     messages = get_user_history(user_id)
     
-    # Проверяем, настроен ли YandexGPT
-    if not YANDEX_FOLDER_ID or not YANDEX_API_KEY:
+    # Проверяем, настроен ли NVIDIA API
+    if not NVIDIA_API_KEY:
         await update.message.reply_text(
             "⚠️ ИИ временно недоступен. Пожалуйста, сообщите администратору.",
             reply_markup=main_menu()
         )
         return
     
-    # Заголовки для YandexGPT
+    # Заголовки для NVIDIA NIM
     headers = {
-        "Authorization": f"Api-Key {YANDEX_API_KEY}",
-        "x-folder-id": YANDEX_FOLDER_ID,
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Content-Type": "application/json",
     }
     
-    # Преобразуем историю в формат YandexGPT (используем 'text' вместо 'content')
-    yandex_messages = []
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content")
-        # YandexGPT использует 'text' вместо 'content'
-        yandex_messages.append({"role": role, "text": content})
-    
-    # Формируем запрос
+    # Формируем запрос в формате OpenAI
     payload = {
-        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest",
-        "completionOptions": {
-            "stream": False,
-            "temperature": 0.7,
-            "maxTokens": "1000"
-        },
-        "messages": yandex_messages
+        "model": "meta/llama-3.1-8b-instruct",
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1000,
     }
     
-    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
     
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload, timeout=60) as response:
                 if response.status == 200:
                     result = await response.json()
-                    bot_reply = result['result']['alternatives'][0]['message']['text']
-                    print(f"✅ Ответ получен от YandexGPT")
+                    bot_reply = result['choices'][0]['message']['content']
+                    print(f"✅ Ответ получен от NVIDIA NIM")
                     add_to_history(user_id, "assistant", bot_reply)
                     await update.message.reply_text(bot_reply, reply_markup=main_menu())
                 else:
                     error_text = await response.text()
-                    logger.error(f"Ошибка YandexGPT {response.status}: {error_text[:200]}")
+                    logger.error(f"Ошибка NVIDIA API {response.status}: {error_text[:200]}")
                     await update.message.reply_text(
                         "⚠️ Извините, ИИ временно недоступен. Попробуйте позже.",
                         reply_markup=main_menu()
@@ -647,7 +626,7 @@ def main():
     print("📅 ЗАПИСЬ: через кнопку 'Записаться'")
     print("📞 СВЯЗЬ: через кнопку 'Связаться с мастером'")
     print("📚 БАЗА ЗНАНИЙ: быстрые ответы на частые вопросы")
-    print("💰 ЦЕНА: фиксированная - 1500₽ за любые опции")
+    print("💰 ЦЕНА: активация - 1600₽, повторно - 700₽")
     print("🇷🇺 РУСИФИКАЦИЯ: отдельная услуга - 35 000 ₽")
     print("👥 ГРУППА: кнопка 'Вступить в группу'")
     print("=" * 40)
