@@ -17,6 +17,7 @@ import os
 import re
 import tempfile
 import time
+from zoneinfo import ZoneInfo
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
@@ -99,6 +100,14 @@ MAX_USER_MESSAGE_CHARS = int(_env("MAX_USER_MESSAGE_CHARS", "2000") or 2000)
 MAX_USERS_IN_MEMORY = int(_env("MAX_USERS_IN_MEMORY", "2000") or 2000)
 STATE_TTL_HOURS = float(_env("STATE_TTL_HOURS", "12") or 12)
 MAX_STORED_RECORDS = int(_env("MAX_STORED_RECORDS", "5000") or 5000)
+
+# Часовой пояс для дат записей: сервер обычно живёт в UTC, а клиенты — в Москве.
+# Без этого «сегодня»/«завтра» считались бы по UTC и после 21:00 мск уезжали на сутки.
+BOT_TIMEZONE = _env("BOT_TIMEZONE", "Europe/Moscow")
+try:
+    TZ_INFO = ZoneInfo(BOT_TIMEZONE)
+except Exception:  # нет tzdata или опечатка в имени зоны
+    TZ_INFO = None
 
 DATA_DIR = Path(_env("DATA_DIR") or (BASE_DIR / "data"))
 BOOKINGS_FILE = DATA_DIR / "bookings.json"
@@ -431,6 +440,11 @@ def save_contact(contact_data: Dict[str, Any]) -> bool:
 
 
 # ============================== отправка сообщений ==================================
+
+
+def now_local() -> datetime:
+    """Текущее время в часовом поясе бота (по умолчанию Europe/Moscow)."""
+    return datetime.now(TZ_INFO) if TZ_INFO is not None else datetime.now()
 
 
 def chunk_text(text: str, limit: int = TELEGRAM_CHUNK) -> List[str]:
@@ -775,12 +789,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "book_today":
         state.booking = BookingDraft(service="Активация скрытых опций", price=kb.PRICES["single"],
-                                     step="name", date=datetime.now().strftime("%d.%m.%Y"))
+                                     step="name", date=now_local().strftime("%d.%m.%Y"))
         await edit_or_send(query, f"📅 ДАТА: {state.booking.date}\n\nНапишите ВАШЕ ИМЯ:", back_button())
         return
 
     if data == "book_tomorrow":
-        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+        tomorrow = (now_local() + timedelta(days=1)).strftime("%d.%m.%Y")
         state.booking = BookingDraft(service="Активация скрытых опций", price=kb.PRICES["single"],
                                      step="name", date=tomorrow)
         await edit_or_send(query, f"📅 ДАТА: {tomorrow}\n\nНапишите ВАШЕ ИМЯ:", back_button())
@@ -928,7 +942,7 @@ async def _finalize_booking(update: Update, context: ContextTypes.DEFAULT_TYPE,
     record.update({
         "user_id": user.id,
         "username": user.username or "",
-        "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "created_at": now_local().strftime("%d.%m.%Y %H:%M"),
     })
     record.pop("step", None)
 
@@ -988,7 +1002,7 @@ async def _handle_contact_text(update: Update, context: ContextTypes.DEFAULT_TYP
     record.update({
         "user_id": user.id,
         "username": user.username or "",
-        "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "created_at": now_local().strftime("%d.%m.%Y %H:%M"),
     })
     record.pop("step", None)
     saved = save_contact(record)
@@ -1193,6 +1207,8 @@ def main() -> None:
 
     provider = detect_provider()
     logger.info("Найденные переменные с ключами: %s", ", ".join(found_key_variables()) or "нет")
+    logger.info("Часовой пояс бота: %s (%s)", BOT_TIMEZONE,
+                now_local().strftime("%d.%m.%Y %H:%M") if TZ_INFO else "системное время — tzdata не найден")
     if provider:
         logger.info("ИИ: провайдер %s (доступны: %s)", provider, ", ".join(available_providers()))
     else:
