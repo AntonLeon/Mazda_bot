@@ -86,7 +86,16 @@ NVIDIA_API_KEY = _env_any(*NVIDIA_KEY_NAMES)
 # meta/llama-3.1-8b-instruct выведена из эксплуатации 26.08.2026 (HTTP 410 Gone).
 # Дефолт — модель, проверенная на живом аккаунте; список: GET /v1/models.
 # Учтите: часть моделей каталога не подключена к аккаунту и даёт 404 «Not found for account».
-NVIDIA_MODEL = _env("NVIDIA_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+NVIDIA_MODEL = _env("NVIDIA_MODEL", "google/diffusiongemma-26b-a4b-it")
+# Запасные модели: если основная недоступна (404/502/503) или вернула пустой ответ,
+# бот пробует следующую — у NVIDIA регулярно «падают» отдельные модели
+NVIDIA_FALLBACK_MODELS = [
+    m.strip() for m in _env(
+        "NVIDIA_FALLBACK_MODELS",
+        "meta/llama-3.2-11b-vision-instruct,nvidia/nemotron-3-super-120b-a12b",
+    ).split(",") if m.strip()
+]
+LLM_RETRY_BACKOFF = float(_env("LLM_RETRY_BACKOFF", "2") or 2)
 YANDEX_API_KEY = _env_any(*YANDEX_KEY_NAMES)
 YANDEX_FOLDER_ID = _env_any(*YANDEX_FOLDER_NAMES)
 YANDEX_MODEL = _env("YANDEX_MODEL", "yandexgpt/latest")
@@ -124,8 +133,11 @@ SYSTEM_PROMPT = """Ты — помощник сервиса по Mazda CX-5 из
 - На общие вопросы про Mazda CX-5 (моторы, коробки, комплектации, бензин, свечи, расход,
   обслуживание, зимняя эксплуатация) отвечай сам из своих знаний, по существу и с пользой.
   Отсылка к мастеру вместо ответа — плохой ответ.
-- Про моторы китайской CX-5: бензиновые 2.0 и 2.5 SkyActiv-G; про Турбо, гибрид и дизель
-  говори, что это версии для других рынков. Точные мощность и комплектацию уточняй по году.
+- Про моторы китайской CX-5: бензиновые 2.0 и 2.5 SkyActiv-G; Турбо, гибрид и дизель —
+  версии для других рынков, в китайской линейке их нет.
+  Мощность называй только диапазоном и с оговоркой: 2.0 — примерно 150–165 л.с.,
+  2.5 — примерно 185–195 л.с., точные значения зависят от года и комплектации.
+  Не утверждай конкретные л.с. как факт — предложи уточнить по VIN или у мастера.
 - Про топливо не настаивай на конкретном октановом числе: скажи, что для китайской версии
   обычно 92 и выше, и посоветуй свериться с наклейкой на лючке бензобака.
 - Не уверен в конкретной цифре — скажи «примерно», но не отказывайся отвечать.
@@ -262,8 +274,9 @@ def _openai_style_content(data: Dict[str, Any], provider: str) -> str:
     return content
 
 
-async def _ask_nvidia(messages: List[Dict[str, str]]) -> str:
-    payload = {"model": NVIDIA_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": LLM_MAX_TOKENS}
+async def _nvidia_request(model: str, messages: List[Dict[str, str]], max_tokens: int) -> str:
+    """Один вызов модели NVIDIA. Пустой content считается ошибкой (reasoning-модели)."""
+    payload = {"model": model, "messages": messages, "temperature": 0.7, "max_tokens": max_tokens}
     data = await _post_json(
         NVIDIA_URL,
         {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"},
@@ -271,23 +284,43 @@ async def _ask_nvidia(messages: List[Dict[str, str]]) -> str:
     )
     content = _openai_style_content(data, "nvidia")
     if not content:
-        # reasoning-модели иногда тратят весь лимит на «размышления» и оставляют пустой ответ:
-        # один повтор с увеличенным лимитом обычно решает проблему
-        payload["max_tokens"] = LLM_MAX_TOKENS * 3
-        logger.info("nvidia: повтор запроса с max_tokens=%s", payload["max_tokens"])
-        data = await _post_json(
-            NVIDIA_URL,
-            {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"},
-            payload, "nvidia",
-        )
-        content = _openai_style_content(data, "nvidia")
-    if not content:
-        raise LLMError(
-            f"nvidia: модель {NVIDIA_MODEL} вернула пустой ответ — смените NVIDIA_MODEL "
-            f"(например, nvidia/nemotron-3-super-120b-a12b или meta/llama-3.2-11b-vision-instruct)",
-            provider="nvidia",
-        )
+        raise LLMError(f"nvidia: модель {model} вернула пустой ответ", provider="nvidia")
     return content
+
+
+async def _ask_nvidia(messages: List[Dict[str, str]]) -> str:
+    """Спросить NVIDIA, перебирая основную и запасные модели.
+
+    Причина: отдельные модели у NVIDIA отвечают 404 (не подключена к аккаунту),
+    502/503 (сбой на стороне сервиса) или возвращают пустой content. Один повтор
+    и переход к следующей модели делают бота устойчивым к таким сбоям.
+    """
+    models = [NVIDIA_MODEL] + [m for m in NVIDIA_FALLBACK_MODELS if m != NVIDIA_MODEL]
+    problems: List[str] = []
+
+    for model in models:
+        for attempt in (1, 2):
+            tokens = LLM_MAX_TOKENS if attempt == 1 else LLM_MAX_TOKENS * 3
+            try:
+                answer = await _nvidia_request(model, messages, tokens)
+                if attempt > 1 or model != NVIDIA_MODEL:
+                    logger.info("nvidia: ответила модель %s (попытка %s)", model, attempt)
+                return answer
+            except LLMError as exc:
+                problems.append(f"{model} (попытка {attempt}): {exc}")
+                if exc.status == 404:
+                    logger.warning("nvidia: модель %s недоступна для аккаунта — беру следующую", model)
+                    break  # имя модели не наше дело, сразу следующая
+                if attempt == 1:
+                    logger.warning("nvidia: сбой модели %s (%s) — повтор через %.0f с",
+                                   model, exc.status or "пустой ответ", LLM_RETRY_BACKOFF)
+                    await asyncio.sleep(LLM_RETRY_BACKOFF)
+
+    raise LLMError(
+        "nvidia: не сработала ни одна модель — " + " | ".join(problems[:3]),
+        provider="nvidia",
+        status=None,
+    )
 
 
 async def _ask_yandex(messages: List[Dict[str, str]]) -> str:
