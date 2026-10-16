@@ -1,12 +1,22 @@
 """
-База знаний бота для быстрых ответов без обращения к ИИ
-"""
+База знаний бота для быстрых ответов без обращения к ИИ.
 
-# Стоимость опций
+Правила (KNOWLEDGE_RULES) проверяются по порядку: сначала узкие темы
+(русификация, конкретные опции), потом общие («сколько стоит»).
+Короткие латинские сокращения (lim, tja, tpms) сравниваются по границам слова,
+чтобы «slim» не считался запросом про LIM.
+"""
+from __future__ import annotations
+
+import re
+
+# Стоимость услуг
 PRICES = {
     "single": "1 600 ₽",
-    "repeated": "700 ₽"
+    "repeated": "700 ₽",
+    "localization": "35 000 ₽",
 }
+LOCALIZATION_PRICE = PRICES["localization"]
 
 # Скрытые опции
 HIDDEN_FEATURES = {
@@ -17,8 +27,16 @@ HIDDEN_FEATURES = {
     "lim": "✅ LIM — интеллектуальный ограничитель скорости\n\nПозволяет задать максимальную скорость (например, 40, 50, 79 км/ч), которую автомобиль не превысит. Водитель полностью управляет движением: можно ехать медленно, ускоряться, останавливаться. Но при попытке разгона выше установленного лимита система ограничит подачу газа и не даст превысить заданную скорость. Удобно в городе и при контроле камер — вы не превысите скорость случайно.",
     "sound": "✅ Улучшение звука",
     "tja": "✅ TJA — ассистент движения в пробке\nработает с адаптивным круиз-контролем",
-    "tpms": "✅ TPMS — контроль давления в шинах\nМожно активировать или отключить уведомление о низком давлении шин на приборной панели."
+    "tpms": "✅ TPMS — контроль давления в шинах\nМожно активировать или отключить уведомление о низком давлении шин на приборной панели.",
 }
+
+PRICE_LIST_TEXT = (
+    "💰 СТОИМОСТЬ УСЛУГ:\n\n"
+    f"• Активация любого количества скрытых опций — {PRICES['single']}\n"
+    f"• Повторное обращение (включение/отключение других опций) — {PRICES['repeated']}\n"
+    f"• 🇷🇺 Русификация приборной панели и голосового управления — {PRICES['localization']}\n\n"
+    "При повторном обращении цена ниже, потому что основная работа уже оплачена."
+)
 
 # FAQ
 FAQ = {
@@ -29,7 +47,19 @@ FAQ = {
     "Нужно ли разбирать автомобиль?": "Нет — разбирать автомобиль не требуется. Всё делается через диагностический разъём, без вмешательства в проводку и салон.",
     "Как происходит активация?": "Активация делается УДАЛЕННО через AnyDesk. Вы подключаете сканер к авто, ноутбук к сканеру, даёте доступ — и мы активируем опции.",
     "Можно ли сделать при личной встрече?": "Да, если вы находитесь в одном городе с мастером, можно договориться о личной встрече. Напишите мастеру для уточнения.",
-    "Сколько стоит активация?": f"💰 СТОИМОСТЬ АКТИВАЦИИ:\n\n• Активация любого количества опций — {PRICES['single']}\n• Повторное обращение (отключение/включение других опций) — {PRICES['repeated']}"
+    "Сколько стоит активация?": PRICE_LIST_TEXT,
+    "Что входит в русификацию?": (
+        "🇷🇺 Русификация Mazda CX-5 из Китая:\n"
+        "• приборная панель, меню и предупреждения — на русском\n"
+        "• мультимедиа Mazda Connect и камеры 360° — на русском\n"
+        "• штатная магнитола остаётся штатной, доп. блоки и CAN-фильтры не нужны\n"
+        f"💰 Стоимость — {LOCALIZATION_PRICE}, срок — 40–60 минут."
+    ),
+    "Сколько стоит русификация?": (
+        f"🇷🇺 Русификация приборной панели и голосового управления — {LOCALIZATION_PRICE}.\n\n"
+        "Что входит: приборная панель, меню мультимедиа, камеры 360°, предупреждения — на русском. "
+        "Штатная магнитола остаётся штатной, без доп. блоков и CAN-фильтров."
+    ),
 }
 
 # Что нужно для активации
@@ -67,6 +97,7 @@ https://ozon.ru/t/fI4vFKo
 """
 
 # Информация о русификации
+# Текст без привязки к датам: раньше тут было обещание «в августе», которое устаревает.
 RUSSIAN_LOCALIZATION_INFO = """
 🇨🇳➡️🇷🇺 **РУСИФИКАЦИЯ MAZDA CX-5 ИЗ КИТАЯ**
 
@@ -87,7 +118,7 @@ RUSSIAN_LOCALIZATION_INFO = """
 ▪️ Логика Mazda Connect не ломается
 ▪️ Поддержка после установки — не бросаем один на один с машиной
 
-🚀🆕 **В августе — обновление 😉, русификация с Android Auto** 🤖
+🆕 Доступна русификация вместе с Android Auto.
 
 **Подходит:**
 Mazda CX-5 для китайского рынка с Mazda Connect 2.
@@ -102,47 +133,79 @@ Mazda CX-5 для китайского рынка с Mazda Connect 2.
 """
 
 COMMON_WORDS = [
-    "как дела", "что делаешь", "расскажи", "привет", "здравствуй", 
-    "пока", "спасибо", "анекдот", "шутка", "погода"
+    "как дела", "что делаешь", "расскажи", "привет", "здравствуй",
+    "пока", "спасибо", "анекдот", "шутка", "погода",
 ]
 
+# Порядок важен: узкие правила выше общих.
 KNOWLEDGE_RULES = [
-    {"keywords": ["i-stop", "istop", "отключение i-stop"], "answer": HIDDEN_FEATURES["i-stop"], "type": "feature"},
-    {"keywords": ["гололёд", "гололед", "информирование о гололёде"], "answer": HIDDEN_FEATURES["ice_warning"], "type": "feature"},
+    # --- русификация (раньше правила не было, и вопрос уходил в ИИ с выдуманной ценой)
+    {
+        "keywords": ["русификац", "русифицировать", "перевести панель", "русский язык",
+                     "русскоязычн", "android auto", "андроид авто"],
+        "answer": FAQ["Сколько стоит русификация?"],
+        "type": "localization",
+    },
+    # --- конкретные скрытые опции
+    {"keywords": ["i-stop", "istop"], "answer": HIDDEN_FEATURES["i-stop"], "type": "feature"},
+    {"keywords": ["гололёд", "гололед"], "answer": HIDDEN_FEATURES["ice_warning"], "type": "feature"},
     {"keywords": ["усталость водителя", "контроль усталости", "чашечка кофе"], "answer": HIDDEN_FEATURES["fatigue"], "type": "feature"},
     {"keywords": ["дорожные знаки", "чтение знаков", "traffic sign"], "answer": HIDDEN_FEATURES["sign_recognition"], "type": "feature"},
-    {"keywords": ["lim", "ограничитель скорости", "интеллектуальный ограничитель"], "answer": HIDDEN_FEATURES["lim"], "type": "feature"},
+    {"keywords": ["lim", "ограничитель скорости"], "answer": HIDDEN_FEATURES["lim"], "type": "feature"},
     {"keywords": ["улучшение звука", "качество звука"], "answer": HIDDEN_FEATURES["sound"], "type": "feature"},
     {"keywords": ["tja", "ассистент в пробке"], "answer": HIDDEN_FEATURES["tja"], "type": "feature"},
-    {"keywords": ["tpms", "давление в шинах", "контроль давления"], "answer": HIDDEN_FEATURES["tpms"], "type": "feature"},
+    {"keywords": ["tpms", "давление в шинах"], "answer": HIDDEN_FEATURES["tpms"], "type": "feature"},
+    # --- частые вопросы
     {"keywords": ["прошивка или активация"], "answer": FAQ["Это прошивка или активация?"], "type": "faq"},
     {"keywords": ["можно вернуть", "откатить"], "answer": FAQ["Можно вернуть обратно?"], "type": "faq"},
-    {"keywords": ["сколько времени", "30-40 минут"], "answer": FAQ["Сколько занимает работа?"], "type": "faq"},
+    {"keywords": ["сколько времени", "сколько занимает", "как долго"], "answer": FAQ["Сколько занимает работа?"], "type": "faq"},
     {"keywords": ["разбирать автомобиль", "разбирать машину", "проводка"], "answer": FAQ["Нужно ли разбирать автомобиль?"], "type": "faq"},
-    {"keywords": ["удалённо", "anydesk", "удаленный доступ"], "answer": FAQ["Как происходит активация?"], "type": "faq"},
+    {"keywords": ["удалённо", "удаленно", "anydesk"], "answer": FAQ["Как происходит активация?"], "type": "faq"},
     {"keywords": ["личная встреча", "при личной встрече"], "answer": FAQ["Можно ли сделать при личной встрече?"], "type": "faq"},
-    {"keywords": ["сколько стоит", "цена активации", "стоимость"], "answer": FAQ["Сколько стоит активация?"], "type": "faq"},
+    {"keywords": ["все функции", "точно появятся", "появится ли"], "answer": FAQ["Все функции точно появятся?"], "type": "faq"},
+    # --- цена: общее правило ниже частных, отвечает полным прайсом (включая русификацию)
+    {
+        "keywords": ["сколько стоит", "стоимость", "цена", "прайс", "почём", "почем"],
+        "answer": PRICE_LIST_TEXT,
+        "type": "price",
+    },
 ]
 
-def is_general_conversation(user_message):
-    user_message_lower = user_message.lower()
-    for word in COMMON_WORDS:
-        if word in user_message_lower:
-            return True
-    return False
+_LATIN_SHORT = re.compile(r"^[a-z0-9\-]+$")
 
-def check_knowledge_base(user_message):
-    if is_general_conversation(user_message):
-        return None, None
-    
-    user_message_lower = user_message.lower()
+
+def _matches(text_lower: str, keyword: str) -> bool:
+    """Подстрокой ищем русские слова (нужна морфология), по границам слова — короткие латинские.
+
+    Без этого «lim» находился внутри «slim», а «tja» — внутри произвольных слов.
+    """
+    keyword = keyword.lower()
+    if _LATIN_SHORT.match(keyword) and len(keyword) <= 5:
+        return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text_lower) is not None
+    return keyword in text_lower
+
+
+def is_general_conversation(user_message: str) -> bool:
+    """Похоже ли сообщение на светскую беседу, а не на вопрос по услугам."""
+    lowered = (user_message or "").lower()
+    return any(word in lowered for word in COMMON_WORDS)
+
+
+def check_knowledge_base(user_message: str):
+    """Вернуть (ответ, тип) из базы знаний или (None, None).
+
+    Правила ищутся всегда, даже если сообщение похоже на светскую беседу:
+    иначе «расскажи про i-stop» уходило в ИИ и получало выдуманный ответ.
+    """
+    lowered = (user_message or "").lower()
     for rule in KNOWLEDGE_RULES:
         for keyword in rule["keywords"]:
-            if keyword in user_message_lower:
+            if _matches(lowered, keyword):
                 return rule["answer"], rule["type"]
     return None, None
 
-def get_all_features_text():
+
+def get_all_features_text() -> str:
     text = "🔓 ДОСТУПНЫЕ СКРЫТЫЕ ОПЦИИ:\n\n"
     for desc in HIDDEN_FEATURES.values():
         text += f"{desc}\n\n"
@@ -150,11 +213,13 @@ def get_all_features_text():
     text += f"💰 Стоимость активации ЛЮБОГО количества опций — {PRICES['single']}"
     return text
 
-def get_faq_text():
+
+def get_faq_text() -> str:
     text = "❓ ЧАСТЫЕ ВОПРОСЫ:\n\n"
     for q, a in FAQ.items():
         text += f"❔ {q}\n{a}\n\n"
     return text
 
-def get_russian_localization_text():
+
+def get_russian_localization_text() -> str:
     return RUSSIAN_LOCALIZATION_INFO

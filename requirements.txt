@@ -1,0 +1,18 @@
+# Зависимости бота Mazda CX-5.
+# Установка:  python3 -m venv venv && venv/bin/pip install -r requirements.txt
+# Требуется Python 3.9+ (проверено на 3.11/3.12 с PTB 20.7 и 22.8).
+# Важно: сам python-telegram-bot 22.x требует Python 3.10+. На Python 3.9 pip
+# поставит совместимую ветку 20.x/21.x — код проверен и с 20.7.
+
+# Telegram Bot API (v20+ — используется ApplicationBuilder/run_polling)
+python-telegram-bot>=20.7,<23
+
+# Чтение .env
+python-dotenv>=1.0
+
+# HTTP для запросов к LLM и запасного поиска
+aiohttp>=3.9
+
+# Поиск в интернете. Пакет duckduckgo_search переименован в ddgs —
+# код понимает оба варианта, ставить нужно один.
+ddgs>=6.0
