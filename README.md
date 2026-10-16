@@ -76,14 +76,15 @@ curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"   # url долж
 | `BOT_TOKEN` | да | токен от [@BotFather](https://t.me/BotFather) |
 | `MASTER_IDS` | да, для заявок | chat_id мастеров через запятую. Мастер должен сам написать боту `/start`, иначе Telegram запретит отправку |
 | `LLM_PROVIDER` | нет | `nvidia`, `yandex` или `openrouter`. Без неё берётся первый провайдер, для которого есть ключ |
-| `NVIDIA_API_KEY` (или `NVIDIA_NIM_API_KEY`/`NVAPI_KEY`/`NGC_API_KEY`), `NVIDIA_MODEL` | для NVIDIA | ключ NIM (`nvapi-…`), модель по умолчанию `meta/muse-glimmer-30b` |
+| `NVIDIA_API_KEY` (или `NVIDIA_NIM_API_KEY`/`NVAPI_KEY`/`NGC_API_KEY`), `NVIDIA_MODEL` | для NVIDIA | ключ NIM (`nvapi-…`), модель по умолчанию `nvidia/nemotron-3-super-120b-a12b` |
 | `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`, `YANDEX_MODEL` | для YandexGPT | ключ `Api-Key` и folder id (альтернативные имена: `YC_API_KEY`, `YC_FOLDER_ID`); модель по умолчанию `yandexgpt/latest` |
 | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | для OpenRouter | ключ `sk-or-…`, модель по умолчанию `meta-llama/llama-3.1-8b-instruct:free` |
 | `GROUP_LINK` | нет | ссылка на чат, её показываем, если заявку не удалось доставить мастеру |
 | `DATA_DIR` | нет | куда писать заявки (по умолчанию `./data`) |
 | `RATE_LIMIT_SECONDS` | нет | пауза между сообщениями одного пользователя (по умолчанию 3 с, `0` — выключить) |
 | `BOT_TIMEZONE` | нет | часовой пояс для дат записей (по умолчанию `Europe/Moscow`; серверы часто живут в UTC) |
-| `LLM_TIMEOUT` | нет | таймаут запроса к ИИ в секундах (по умолчанию 60) |
+| `LLM_TIMEOUT` | нет | таймаут запроса к ИИ, секунды (по умолчанию 120) |
+| `LLM_MAX_TOKENS` | нет | лимит токенов ответа ИИ (по умолчанию 1000; при пустом ответе бот повторяет запрос с лимитом ×3) |
 | `MAX_HISTORY_MESSAGES` | нет | сколько сообщений диалога держать в контексте ИИ (20) |
 
 Секреты в репозиторий не попадают: `.env` и `data/` исключены `.gitignore`

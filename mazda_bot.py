@@ -86,14 +86,15 @@ NVIDIA_API_KEY = _env_any(*NVIDIA_KEY_NAMES)
 # meta/llama-3.1-8b-instruct выведена из эксплуатации 26.08.2026 (HTTP 410 Gone).
 # Дефолт — модель, проверенная на живом аккаунте; список: GET /v1/models.
 # Учтите: часть моделей каталога не подключена к аккаунту и даёт 404 «Not found for account».
-NVIDIA_MODEL = _env("NVIDIA_MODEL", "meta/muse-glimmer-30b")
+NVIDIA_MODEL = _env("NVIDIA_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 YANDEX_API_KEY = _env_any(*YANDEX_KEY_NAMES)
 YANDEX_FOLDER_ID = _env_any(*YANDEX_FOLDER_NAMES)
 YANDEX_MODEL = _env("YANDEX_MODEL", "yandexgpt/latest")
 OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _env("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 
-LLM_TIMEOUT = float(_env("LLM_TIMEOUT", "60") or 60)
+LLM_TIMEOUT = float(_env("LLM_TIMEOUT", "120") or 120)
+LLM_MAX_TOKENS = int(_env("LLM_MAX_TOKENS", "1000") or 1000)
 RATE_LIMIT_SECONDS = float(_env("RATE_LIMIT_SECONDS", "3") or 3)
 MAX_HISTORY_MESSAGES = int(_env("MAX_HISTORY_MESSAGES", "20") or 20)
 MAX_USER_MESSAGE_CHARS = int(_env("MAX_USER_MESSAGE_CHARS", "2000") or 2000)
@@ -239,17 +240,48 @@ async def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any],
         raise LLMError(f"{provider}: сеть недоступна ({exc.__class__.__name__})", provider=provider) from exc
 
 
+def _openai_style_content(data: Dict[str, Any], provider: str) -> str:
+    """Достать текст ответа из формата OpenAI-совместимых API."""
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"{provider}: неожиданный формат ответа", provider=provider) from exc
+    content = (message.get("content") or "").strip()
+    if not content:
+        reasoning = (message.get("reasoning_content") or "").strip()
+        logger.warning(
+            "%s: пустой content, размышлений %d символов (модель %s)",
+            provider, len(reasoning), NVIDIA_MODEL if provider == "nvidia" else OPENROUTER_MODEL,
+        )
+    return content
+
+
 async def _ask_nvidia(messages: List[Dict[str, str]]) -> str:
+    payload = {"model": NVIDIA_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": LLM_MAX_TOKENS}
     data = await _post_json(
         NVIDIA_URL,
         {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"},
-        {"model": NVIDIA_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 1000},
-        "nvidia",
+        payload, "nvidia",
     )
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMError("nvidia: неожиданный формат ответа", provider="nvidia") from exc
+    content = _openai_style_content(data, "nvidia")
+    if not content:
+        # reasoning-модели иногда тратят весь лимит на «размышления» и оставляют пустой ответ:
+        # один повтор с увеличенным лимитом обычно решает проблему
+        payload["max_tokens"] = LLM_MAX_TOKENS * 3
+        logger.info("nvidia: повтор запроса с max_tokens=%s", payload["max_tokens"])
+        data = await _post_json(
+            NVIDIA_URL,
+            {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"},
+            payload, "nvidia",
+        )
+        content = _openai_style_content(data, "nvidia")
+    if not content:
+        raise LLMError(
+            f"nvidia: модель {NVIDIA_MODEL} вернула пустой ответ — смените NVIDIA_MODEL "
+            f"(например, nvidia/nemotron-3-super-120b-a12b или meta/llama-3.2-11b-vision-instruct)",
+            provider="nvidia",
+        )
+    return content
 
 
 async def _ask_yandex(messages: List[Dict[str, str]]) -> str:
@@ -278,13 +310,13 @@ async def _ask_openrouter(messages: List[Dict[str, str]]) -> str:
     data = await _post_json(
         OPENROUTER_URL,
         {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-        {"model": OPENROUTER_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 1000},
+        {"model": OPENROUTER_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": LLM_MAX_TOKENS},
         "openrouter",
     )
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMError("openrouter: неожиданный формат ответа", provider="openrouter") from exc
+    content = _openai_style_content(data, "openrouter")
+    if not content:
+        raise LLMError(f"openrouter: модель {OPENROUTER_MODEL} вернула пустой ответ", provider="openrouter")
+    return content
 
 
 PROVIDER_CALLS = {"nvidia": _ask_nvidia, "yandex": _ask_yandex, "openrouter": _ask_openrouter}
@@ -717,6 +749,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
     state = STATES.get(user_id)
     data = query.data or ""
+    logger.info("Нажата кнопка %r пользователем %s", data, user_id)
 
     if data == "back_main":
         state.booking = None
@@ -1036,7 +1069,10 @@ async def _recommend_llm(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return
 
+    started = time.time()
     user_text = text.strip()[:MAX_USER_MESSAGE_CHARS]
+    model_name = {"nvidia": NVIDIA_MODEL, "yandex": YANDEX_MODEL, "openrouter": OPENROUTER_MODEL}.get(provider, "?")
+    logger.info("Запрос к ИИ: провайдер %s, модель %s", provider, model_name)
     messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += state.history[-MAX_HISTORY_MESSAGES:]
     messages.append({"role": "user", "content": user_text})
@@ -1057,6 +1093,7 @@ async def _recommend_llm(update: Update, context: ContextTypes.DEFAULT_TYPE,
     state.history.append({"role": "user", "content": user_text})
     state.history.append({"role": "assistant", "content": answer})
     state.history = state.history[-MAX_HISTORY_MESSAGES:]
+    logger.info("ИИ ответил за %.1f с, %d символов", time.time() - started, len(answer))
     await reply_long(update.effective_message, answer, main_menu())
 
 
@@ -1093,13 +1130,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if message is None or user is None or not message.text:
         return
     if not _is_addressed(update, context):
+        logger.info(
+            "Сообщение пропущено: чат %s (%s), пользователь %s — бот отвечает в группах только "
+            "на упоминание @%s или на реплай",
+            update.effective_chat.id, update.effective_chat.type, user.id, context.bot.username,
+        )
         return
 
     state = STATES.get(user.id)
     text = _strip_mention(message.text, context.bot.username)
+    logger.info(
+        "Сообщение: чат %s (%s), пользователь %s (@%s), %d символов: %r",
+        update.effective_chat.id, update.effective_chat.type, user.id, user.username,
+        len(text), text[:60],
+    )
 
     warning = _rate_limited(state)
     if warning is not None:
+        logger.info("Сработало ограничение частоты для %s", user.id)
         if warning:
             await reply_long(message, warning, back_button())
         return
@@ -1119,6 +1167,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # 2. Запрещённые темы проверяем и для поиска, и для ИИ (раньше фильтр обходился)
     if is_forbidden_query(text):
+        logger.info("Запрос отклонён фильтром тем")
         await reply_long(message, "⛔ ТАКУЮ ТЕМУ Я НЕ ОБСУЖДАЮ.\n\nДавайте вернёмся к автомобилям 🙂", main_menu())
         return
 
@@ -1128,12 +1177,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not search_query:
             await reply_long(message, "Что именно найти? Напишите запрос, например: найди чехлы Mazda CX-5", main_menu())
             return
+        logger.info("Поиск в интернете: %r", search_query)
         await _do_search(update, search_query)
         return
 
     # 4. База знаний
-    answer, _kind = kb.check_knowledge_base(text)
+    answer, kind = kb.check_knowledge_base(text)
     if answer:
+        logger.info("Ответ из базы знаний (тип %s), ИИ не вызывался", kind)
         await reply_long(message, answer, main_menu())
         return
 
@@ -1146,6 +1197,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Фото, голосовые и файлы бот не читает — говорим об этом прямо."""
     if not _is_addressed(update, context):
         return
+    logger.info("Вложение от пользователя %s — просим написать текстом", update.effective_user.id)
     await reply_long(
         update.effective_message,
         "📎 Я понимаю только текст.\n\n"
