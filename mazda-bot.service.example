@@ -1,0 +1,32 @@
+# Пример systemd-юнита для бота Mazda CX-5.
+#
+# Установка:
+#   sudo cp mazda-bot.service.example /etc/systemd/system/mazda-bot.service
+#   sudo nano /etc/systemd/system/mazda-bot.service    # поправьте WorkingDirectory и User
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mazda-bot
+#   journalctl -u mazda-bot -f
+#
+# .env намеренно НЕ передаётся через EnvironmentFile: бот читает его сам из своей папки,
+# а systemd не умеет разбирать комментарии и многострочные значения в .env.
+
+[Unit]
+Description=Mazda CX-5 Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mazda_bot
+ExecStart=/opt/mazda_bot/venv/bin/python /opt/mazda_bot/mazda_bot.py
+User=mazda
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# Если нужен прокси для ИИ (например, NVIDIA недоступна из страны сервера):
+#Environment=HTTPS_PROXY=http://user:pass@proxy-host:3128
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

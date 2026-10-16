@@ -2,9 +2,9 @@
 """Проверка ключей бота: Telegram, NVIDIA NIM, YandexGPT, OpenRouter.
 
 Запуск:  python3 check_keys.py
-Скрипт ничего не отправляет в Telegram и не печатает значения ключей — только
-статус и понятную причину. Ненулевой код возврата, если не работает ни один
-провайдер ИИ.
+Ничего не отправляет в Telegram и не печатает значений ключей — только статус,
+имя переменной, из которой взял ключ, и понятную причину отказа.
+Код возврата 1, если не работает ни один провайдер ИИ.
 """
 from __future__ import annotations
 
@@ -18,13 +18,19 @@ import urllib.request
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 
+# Имена переменных, которые понимает бот (см. mazda_bot.py)
+NVIDIA_NAMES = ("NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "NVAPI_KEY", "NGC_API_KEY")
+YANDEX_KEY_NAMES = ("YANDEX_API_KEY", "YC_API_KEY")
+YANDEX_FOLDER_NAMES = ("YANDEX_FOLDER_ID", "YC_FOLDER_ID", "YANDEX_CATALOG_ID")
+OPENROUTER_NAMES = ("OPENROUTER_API_KEY",)
+
 SECRET_RE = re.compile(r"(nvapi-|sk-|AQVN|ghp_|AIza)[A-Za-z0-9_\-]{6,}")
 HINTS = {
     400: "сервис отклонил запрос — скорее всего неверное имя модели",
     401: "ключ не принят (неверный, отозван или от другого аккаунта)",
     402: "закончились кредиты/квота аккаунта",
     403: "доступ запрещён: ключ или регион заблокированы провайдером",
-    404: "модель недоступна по этому ключу",
+    404: "модель недоступна по этому ключу (проверьте имя модели)",
     429: "исчерпан лимит запросов, попробуйте позже",
     451: "сервис недоступен из вашей сети/страны — нужен VPN или зарубежный сервер",
 }
@@ -39,6 +45,14 @@ def load_env(path: pathlib.Path) -> dict:
         if match:
             env[match.group(1)] = match.group(2).strip().strip('"').strip("'")
     return env
+
+
+def pick(env: dict, names):
+    """Вернуть (имя переменной, значение) для первого непустого имени."""
+    for name in names:
+        if env.get(name):
+            return name, env[name]
+    return None, None
 
 
 def mask(text: str, limit: int = 220) -> str:
@@ -64,8 +78,7 @@ def report(title: str, status, body: str) -> bool:
     if status is None:
         print(f"❌ {title}: нет ответа — {mask(body)}")
     else:
-        hint = HINTS.get(status, "")
-        print(f"❌ {title}: HTTP {status} — {hint}")
+        print(f"❌ {title}: HTTP {status} — {HINTS.get(status, '')}")
         print(f"   ответ сервиса: {mask(body)}")
     return False
 
@@ -77,69 +90,80 @@ def main() -> int:
         return 2
 
     print(f"Файл: {ENV_FILE}")
-    print("Ключи:", ", ".join(sorted(env)) or "нет")
+    print("Переменные в файле:", ", ".join(sorted(env)) or "нет")
     print()
 
     working = []
 
     print("— Telegram —")
-    if env.get("BOT_TOKEN"):
-        status, body = request(f"https://api.telegram.org/bot{env['BOT_TOKEN']}/getMe")
-        if report("токен бота (getMe)", status, body):
+    token_name, token = pick(env, ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TOKEN"))
+    if token:
+        status, body = request(f"https://api.telegram.org/bot{token}/getMe")
+        if report(f"токен бота (getMe, из {token_name})", status, body):
             working.append("telegram")
             print(f"   {mask(body, 120)}")
     else:
         print("❌ BOT_TOKEN не задан")
 
     print("\n— Провайдеры ИИ —")
-    if env.get("NVIDIA_API_KEY"):
+    nvidia_name, nvidia_key = pick(env, NVIDIA_NAMES)
+    if nvidia_key:
         status, body = request(
             "https://integrate.api.nvidia.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {env['NVIDIA_API_KEY']}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {nvidia_key}", "Content-Type": "application/json"},
             payload={
-                "model": env.get("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+                "model": env.get("NVIDIA_MODEL", "google/gemma-3-12b-it"),
                 "messages": [{"role": "user", "content": "ping"}],
                 "max_tokens": 1,
             },
         )
-        if report("NVIDIA NIM", status, body):
+        if report(f"NVIDIA NIM (ключ из {nvidia_name})", status, body):
             working.append("nvidia")
     else:
-        print("❌ NVIDIA_API_KEY не задан — код NVIDIA просто не сможет обратиться к сервису")
+        print(f"❌ NVIDIA: ключа нет. Искал переменные: {', '.join(NVIDIA_NAMES)}")
 
-    if env.get("YANDEX_API_KEY") and env.get("YANDEX_FOLDER_ID"):
+    yandex_key_name, yandex_key = pick(env, YANDEX_KEY_NAMES)
+    folder_name, folder = pick(env, YANDEX_FOLDER_NAMES)
+    if yandex_key and folder:
         status, body = request(
             "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
             headers={
-                "Authorization": f"Api-Key {env['YANDEX_API_KEY']}",
-                "x-folder-id": env["YANDEX_FOLDER_ID"],
+                "Authorization": f"Api-Key {yandex_key}",
+                "x-folder-id": folder,
                 "Content-Type": "application/json",
             },
             payload={
-                "modelUri": f"gpt://{env['YANDEX_FOLDER_ID']}/{env.get('YANDEX_MODEL', 'yandexgpt/latest')}",
+                "modelUri": f"gpt://{folder}/{env.get('YANDEX_MODEL', 'yandexgpt/latest')}",
                 "completionOptions": {"stream": False, "maxTokens": 1},
                 "messages": [{"role": "user", "text": "привет"}],
             },
         )
-        if report("YandexGPT", status, body):
+        if report(f"YandexGPT (ключ из {yandex_key_name}, каталог из {folder_name})", status, body):
             working.append("yandex")
     else:
-        print("⚠️ YandexGPT: нет YANDEX_API_KEY или YANDEX_FOLDER_ID")
+        print(f"⚠️ YandexGPT: нужны и ключ, и каталог. Ключ: {', '.join(YANDEX_KEY_NAMES)}; "
+              f"каталог: {', '.join(YANDEX_FOLDER_NAMES)}")
 
-    if env.get("OPENROUTER_API_KEY"):
+    openrouter_name, openrouter_key = pick(env, OPENROUTER_NAMES)
+    if openrouter_key:
         status, body = request(
             "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {env['OPENROUTER_API_KEY']}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
             payload={
                 "model": env.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
                 "messages": [{"role": "user", "content": "ping"}],
                 "max_tokens": 1,
             },
         )
-        if report("OpenRouter", status, body):
+        if report(f"OpenRouter (ключ из {openrouter_name})", status, body):
             working.append("openrouter")
     else:
-        print("⚠️ OpenRouter: нет OPENROUTER_API_KEY")
+        print(f"⚠️ OpenRouter: ключа нет ({', '.join(OPENROUTER_NAMES)})")
+
+    print("\n— Прокси —")
+    proxy = env.get("HTTPS_PROXY") or env.get("https_proxy") or env.get("ALL_PROXY")
+    print(f"HTTPS_PROXY: {'задан' if proxy else 'не задан'}")
+    print("   Бот учитывает HTTPS_PROXY/HTTP_PROXY из окружения для запросов к ИИ и поиску.")
 
     print("\n— Что делать —")
     if "telegram" not in working:
@@ -147,11 +171,11 @@ def main() -> int:
               "(в РФ API Telegram блокируется — нужен VPN или зарубежный сервер).")
     ai = [name for name in working if name in {"nvidia", "yandex", "openrouter"}]
     if not ai:
-        print("• Ни один провайдер ИИ недоступен: бот запустится, но на вопросы будет отвечать "
-              "только базой знаний. Исправьте ключ или сеть и повторите проверку.")
+        print("• Ни один провайдер ИИ недоступен: бот запустится, но на свободные вопросы будет "
+              "отвечать только базой знаний. Исправьте ключ или сеть и повторите проверку.")
         return 1
     print(f"• Рабочие провайдеры ИИ: {', '.join(ai)}. "
-          f"При необходимости зафиксируйте выбор: LLM_PROVIDER={ai[0]} в .env")
+          f"Зафиксировать выбор можно строкой LLM_PROVIDER={ai[0]} в .env")
     return 0
 
 

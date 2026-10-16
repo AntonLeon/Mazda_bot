@@ -58,16 +58,35 @@ def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _env_any(*names: str, default: str = "") -> str:
+    """Первое непустое значение из списка имён.
+
+    Ключи часто подписывают по-разному (NVIDIA_API_KEY / NVAPI_KEY и т.п.),
+    из-за чего код «не видит» рабочий ключ. Понимаем все распространённые имена.
+    """
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return default
+
+
 # --- конфигурация -------------------------------------------------------------------
 BOT_TOKEN = _env("BOT_TOKEN")
 MASTER_IDS_RAW = _env("MASTER_IDS")
 GROUP_LINK = _env("GROUP_LINK", "https://t.me/MazdaAlex")
 
 LLM_PROVIDER = _env("LLM_PROVIDER").lower()
-NVIDIA_API_KEY = _env("NVIDIA_API_KEY")
-NVIDIA_MODEL = _env("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct")
-YANDEX_API_KEY = _env("YANDEX_API_KEY")
-YANDEX_FOLDER_ID = _env("YANDEX_FOLDER_ID")
+NVIDIA_KEY_NAMES = ("NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "NVAPI_KEY", "NGC_API_KEY")
+YANDEX_KEY_NAMES = ("YANDEX_API_KEY", "YC_API_KEY")
+YANDEX_FOLDER_NAMES = ("YANDEX_FOLDER_ID", "YC_FOLDER_ID", "YANDEX_CATALOG_ID")
+
+NVIDIA_API_KEY = _env_any(*NVIDIA_KEY_NAMES)
+# meta/llama-3.1-8b-instruct выведена из эксплуатации 26.08.2026 (HTTP 410 Gone),
+# поэтому по умолчанию — актуальная instruct-модель. Список: GET /v1/models
+NVIDIA_MODEL = _env("NVIDIA_MODEL", "google/gemma-3-12b-it")
+YANDEX_API_KEY = _env_any(*YANDEX_KEY_NAMES)
+YANDEX_FOLDER_ID = _env_any(*YANDEX_FOLDER_NAMES)
 YANDEX_MODEL = _env("YANDEX_MODEL", "yandexgpt/latest")
 OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _env("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
@@ -115,8 +134,12 @@ STATUS_HINTS = {
     400: "сервис отклонил запрос (400) — проверьте название модели",
     401: "ключ не принят сервисом (401 Unauthorized) — ключ неверный, отозван или от другого аккаунта",
     402: "у аккаунта закончились кредиты/квота (402 Payment Required)",
-    403: "доступ запрещён (403) — ключ или регион заблокированы провайдером",
-    404: "модель недоступна по этому ключу (404)",
+    403: "доступ запрещён (403) — ключ не принят либо регион заблокирован провайдером",
+    404: "модель недоступна по этому ключу (404) — проверьте имя модели в NVIDIA_MODEL",
+    410: (
+        "модель снята с эксплуатации (410 Gone) — имя модели устарело, "
+        "задайте актуальную в NVIDIA_MODEL (список: GET https://integrate.api.nvidia.com/v1/models)"
+    ),
     429: "слишком много запросов (429) — исчерпан лимит, попробуйте позже",
     451: (
         "сервис недоступен из вашей сети или страны (451 Unavailable For Legal Reasons) — "
@@ -132,6 +155,21 @@ class LLMError(RuntimeError):
         super().__init__(message)
         self.provider = provider
         self.status = status
+
+
+def found_key_variables() -> List[str]:
+    """Какие переменные окружения реально дали ключи (для логов и диагностики)."""
+    found = []
+    for label, names, value in (
+        ("NVIDIA", NVIDIA_KEY_NAMES, NVIDIA_API_KEY),
+        ("Yandex key", YANDEX_KEY_NAMES, YANDEX_API_KEY),
+        ("Yandex folder", YANDEX_FOLDER_NAMES, YANDEX_FOLDER_ID),
+        ("OpenRouter", ("OPENROUTER_API_KEY",), OPENROUTER_API_KEY),
+    ):
+        if value:
+            used = next((name for name in names if (os.getenv(name) or "").strip()), names[0])
+            found.append(f"{label}={used}")
+    return found
 
 
 def available_providers() -> List[str]:
@@ -171,7 +209,9 @@ async def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any],
     """POST JSON с понятными ошибками. Отдельная функция — её подменяют в selftest."""
     timeout = aiohttp.ClientTimeout(total=LLM_TIMEOUT)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        # trust_env=True — учитываем HTTPS_PROXY/HTTP_PROXY из окружения:
+        # так запросы к ИИ можно направить через прокси, не меняя код
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.post(url, headers=headers, json=payload) as response:
                 raw = await response.text()
                 if response.status != 200:
@@ -1149,8 +1189,9 @@ def main() -> None:
         raise SystemExit(2)
 
     provider = detect_provider()
+    logger.info("Найденные переменные с ключами: %s", ", ".join(found_key_variables()) or "нет")
     if provider:
-        logger.info("ИИ: провайдер %s (ключи: %s)", provider, ", ".join(available_providers()))
+        logger.info("ИИ: провайдер %s (доступны: %s)", provider, ", ".join(available_providers()))
     else:
         logger.warning(
             "ИИ отключён: нет ни одного ключа (NVIDIA_API_KEY / YANDEX_API_KEY+YANDEX_FOLDER_ID / "

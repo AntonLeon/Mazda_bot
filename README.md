@@ -19,6 +19,39 @@ venv/bin/python mazda_bot.py         # запуск бота
 Бот **не падает**, если ключей ИИ нет: он запустится, будет отвечать базой знаний,
 а на свободные вопросы честно скажет, что ИИ недоступен.
 
+## Установка на новом сервере
+
+```bash
+# скопируйте папку/архив на сервер, затем:
+cd /opt/mazda_bot
+bash deploy.sh                 # создаст venv, поставит зависимости, проверит логику и ключи
+nano .env                      # BOT_TOKEN, MASTER_IDS и ключ ИИ
+python3 check_keys.py          # убедиться, что ключи и сеть живы
+./venv/bin/python mazda_bot.py # проверочный запуск (Ctrl+C для остановки)
+```
+
+Как служба, которая переживает перезагрузку и падения:
+
+```bash
+sudo cp mazda-bot.service.example /etc/systemd/system/mazda-bot.service
+sudo nano /etc/systemd/system/mazda-bot.service   # поправить путь и User
+sudo systemctl daemon-reload && sudo systemctl enable --now mazda-bot
+journalctl -u mazda-bot -f
+```
+
+## Провайдеры ИИ, имена переменных и прокси
+
+- Провайдер выбирается автоматически (NVIDIA → YandexGPT → OpenRouter по наличию ключа)
+  или принудительно: `LLM_PROVIDER=nvidia|yandex|openrouter`.
+- Ключ NVIDIA понимается под любым из имён: `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, `NVAPI_KEY`,
+  `NGC_API_KEY`. Yandex: `YANDEX_API_KEY`/`YC_API_KEY` и `YANDEX_FOLDER_ID`/`YC_FOLDER_ID`/`YANDEX_CATALOG_ID`.
+  При старте бот пишет в лог, из какой переменной взял ключ.
+- **Регион важнее ключа.** С российского IP NVIDIA отвечает `HTTP 451` (и это происходит до проверки
+  ключа), OpenRouter — `403 Access denied by security policy`. Если сервер в РФ, нужен прокси:
+  достаточно задать `HTTPS_PROXY=http://user:pass@host:3128` (в `.env` или в systemd), запросы к ИИ
+  и поиску пойдут через него. YandexGPT из РФ работает без прокси.
+- Модель можно сменить без правки кода: `NVIDIA_MODEL`, `YANDEX_MODEL`, `OPENROUTER_MODEL`.
+
 ## Переменные окружения (`.env`)
 
 | Переменная | Обязательна | Назначение |
@@ -26,8 +59,8 @@ venv/bin/python mazda_bot.py         # запуск бота
 | `BOT_TOKEN` | да | токен от [@BotFather](https://t.me/BotFather) |
 | `MASTER_IDS` | да, для заявок | chat_id мастеров через запятую. Мастер должен сам написать боту `/start`, иначе Telegram запретит отправку |
 | `LLM_PROVIDER` | нет | `nvidia`, `yandex` или `openrouter`. Без неё берётся первый провайдер, для которого есть ключ |
-| `NVIDIA_API_KEY`, `NVIDIA_MODEL` | для NVIDIA | ключ NIM (`nvapi-…`), модель по умолчанию `meta/llama-3.1-8b-instruct` |
-| `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`, `YANDEX_MODEL` | для YandexGPT | ключ `Api-Key` и folder id; модель по умолчанию `yandexgpt/latest` |
+| `NVIDIA_API_KEY` (или `NVIDIA_NIM_API_KEY`/`NVAPI_KEY`/`NGC_API_KEY`), `NVIDIA_MODEL` | для NVIDIA | ключ NIM (`nvapi-…`), модель по умолчанию `google/gemma-3-12b-it` |
+| `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`, `YANDEX_MODEL` | для YandexGPT | ключ `Api-Key` и folder id (альтернативные имена: `YC_API_KEY`, `YC_FOLDER_ID`); модель по умолчанию `yandexgpt/latest` |
 | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | для OpenRouter | ключ `sk-or-…`, модель по умолчанию `meta-llama/llama-3.1-8b-instruct:free` |
 | `GROUP_LINK` | нет | ссылка на чат, её показываем, если заявку не удалось доставить мастеру |
 | `DATA_DIR` | нет | куда писать заявки (по умолчанию `./data`) |
@@ -52,6 +85,7 @@ OpenRouter, печатает статус и причину, значения к
 | Что видно | Причина | Что делать |
 |---|---|---|
 | `NVIDIA NIM: HTTP 451` | NVIDIA закрывает доступ из РФ/санкционных регионов, ключ тут не поможет | VPN или бот на зарубежном сервере |
+| `NVIDIA NIM: HTTP 410 Gone` | модель снята с эксплуатации (прежняя `meta/llama-3.1-8b-instruct` отключена 26.08.2026) | задать актуальную `NVIDIA_MODEL` |
 | `OpenRouter: HTTP 403 Access denied by security policy` | тот же региональный блок | VPN или другой провайдер |
 | `YandexGPT: HTTP 401 Unknown api key` | ключ удалён/отозван либо от другого аккаунта | выпустить новый API-ключ в Yandex Cloud |
 | `api.telegram.org: нет ответа` | в РФ API Telegram блокируется | VPN на машине, где запущен бот |
@@ -95,4 +129,7 @@ python3 selftest.py
 | `search_utils.py` | поиск (DDGS в отдельном потоке + запасной разбор HTML), фильтр тем |
 | `check_keys.py` | диагностика ключей и сети |
 | `selftest.py` | офлайн-проверки логики |
+| `deploy.sh` | установка и проверка на сервере одной командой |
+| `mazda-bot.service.example` | пример systemd-юнита |
 | `requirements.txt` | зависимости |
+| `.env.example` | образец настроек без секретов |

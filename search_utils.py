@@ -186,7 +186,7 @@ async def search_web_fallback(query: str):
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
     try:
         timeout = aiohttp.ClientTimeout(total=20)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(url, params={"q": query, "kp": "-2"}, headers=headers) as response:
                 if response.status != 200:
                     logger.warning("Fallback-поиск: HTTP %s", response.status)
