@@ -76,7 +76,7 @@ curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"   # url долж
 | `BOT_TOKEN` | да | токен от [@BotFather](https://t.me/BotFather) |
 | `MASTER_IDS` | да, для заявок | chat_id мастеров через запятую. Мастер должен сам написать боту `/start`, иначе Telegram запретит отправку |
 | `LLM_PROVIDER` | нет | `nvidia`, `yandex` или `openrouter`. Без неё берётся первый провайдер, для которого есть ключ |
-| `NVIDIA_API_KEY` (или `NVIDIA_NIM_API_KEY`/`NVAPI_KEY`/`NGC_API_KEY`), `NVIDIA_MODEL` | для NVIDIA | ключ NIM (`nvapi-…`), модель по умолчанию `google/gemma-3-12b-it` |
+| `NVIDIA_API_KEY` (или `NVIDIA_NIM_API_KEY`/`NVAPI_KEY`/`NGC_API_KEY`), `NVIDIA_MODEL` | для NVIDIA | ключ NIM (`nvapi-…`), модель по умолчанию `meta/muse-glimmer-30b` |
 | `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`, `YANDEX_MODEL` | для YandexGPT | ключ `Api-Key` и folder id (альтернативные имена: `YC_API_KEY`, `YC_FOLDER_ID`); модель по умолчанию `yandexgpt/latest` |
 | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | для OpenRouter | ключ `sk-or-…`, модель по умолчанию `meta-llama/llama-3.1-8b-instruct:free` |
 | `GROUP_LINK` | нет | ссылка на чат, её показываем, если заявку не удалось доставить мастеру |
@@ -103,6 +103,7 @@ OpenRouter, печатает статус и причину, значения к
 |---|---|---|
 | `NVIDIA NIM: HTTP 451` | NVIDIA закрывает доступ из РФ/санкционных регионов, ключ тут не поможет | VPN или бот на зарубежном сервере |
 | `NVIDIA NIM: HTTP 410 Gone` | модель снята с эксплуатации (прежняя `meta/llama-3.1-8b-instruct` отключена 26.08.2026) | задать актуальную `NVIDIA_MODEL` |
+| `NVIDIA NIM: HTTP 404 «Not found for account»` | модель есть в каталоге, но не подключена к вашему аккаунту | выбрать другую `NVIDIA_MODEL` (проверяйте `python3 check_keys.py`) |
 | `OpenRouter: HTTP 403 Access denied by security policy` | тот же региональный блок | VPN или другой провайдер |
 | `YandexGPT: HTTP 401 Unknown api key` | ключ удалён/отозван либо от другого аккаунта | выпустить новый API-ключ в Yandex Cloud |
 | `api.telegram.org: нет ответа` | в РФ API Telegram блокируется | VPN на машине, где запущен бот |

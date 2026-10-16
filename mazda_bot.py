@@ -82,9 +82,10 @@ YANDEX_KEY_NAMES = ("YANDEX_API_KEY", "YC_API_KEY")
 YANDEX_FOLDER_NAMES = ("YANDEX_FOLDER_ID", "YC_FOLDER_ID", "YANDEX_CATALOG_ID")
 
 NVIDIA_API_KEY = _env_any(*NVIDIA_KEY_NAMES)
-# meta/llama-3.1-8b-instruct выведена из эксплуатации 26.08.2026 (HTTP 410 Gone),
-# поэтому по умолчанию — актуальная instruct-модель. Список: GET /v1/models
-NVIDIA_MODEL = _env("NVIDIA_MODEL", "google/gemma-3-12b-it")
+# meta/llama-3.1-8b-instruct выведена из эксплуатации 26.08.2026 (HTTP 410 Gone).
+# Дефолт — модель, проверенная на живом аккаунте; список: GET /v1/models.
+# Учтите: часть моделей каталога не подключена к аккаунту и даёт 404 «Not found for account».
+NVIDIA_MODEL = _env("NVIDIA_MODEL", "meta/muse-glimmer-30b")
 YANDEX_API_KEY = _env_any(*YANDEX_KEY_NAMES)
 YANDEX_FOLDER_ID = _env_any(*YANDEX_FOLDER_NAMES)
 YANDEX_MODEL = _env("YANDEX_MODEL", "yandexgpt/latest")
@@ -135,7 +136,9 @@ STATUS_HINTS = {
     401: "ключ не принят сервисом (401 Unauthorized) — ключ неверный, отозван или от другого аккаунта",
     402: "у аккаунта закончились кредиты/квота (402 Payment Required)",
     403: "доступ запрещён (403) — ключ не принят либо регион заблокирован провайдером",
-    404: "модель недоступна по этому ключу (404) — проверьте имя модели в NVIDIA_MODEL",
+    404: (
+        "модель недоступна (404). Если в ответе «Not found for account» — эта модель не подключена\n        к вашему аккаунту NVIDIA, выберите другую в NVIDIA_MODEL; иначе проверьте имя модели"
+    ),
     410: (
         "модель снята с эксплуатации (410 Gone) — имя модели устарело, "
         "задайте актуальную в NVIDIA_MODEL (список: GET https://integrate.api.nvidia.com/v1/models)"
