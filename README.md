@@ -39,6 +39,23 @@ sudo systemctl daemon-reload && sudo systemctl enable --now mazda-bot
 journalctl -u mazda-bot -f
 ```
 
+## Запуск на macOS (временный вариант, пока нет сервера)
+
+```bash
+bash run.sh                                  # обычный запуск
+caffeinate -is bash run.sh                   # чтобы Mac не засыпал
+```
+
+Требования: включённый VPN (иначе `api.telegram.org` недоступен и бот не выйдет на связь)
+и заполненный `.env`. Остановка — Ctrl+C. Для постоянной работы лучше зарубежный VPS
+с `deploy.sh` и systemd-юнитом.
+
+Проверить, что бот нигде больше не запущен (иначе будет конфликт опроса Telegram):
+
+```bash
+curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"   # url должен быть пустым
+```
+
 ## Провайдеры ИИ, имена переменных и прокси
 
 - Провайдер выбирается автоматически (NVIDIA → YandexGPT → OpenRouter по наличию ключа)
@@ -131,5 +148,6 @@ python3 selftest.py
 | `selftest.py` | офлайн-проверки логики |
 | `deploy.sh` | установка и проверка на сервере одной командой |
 | `mazda-bot.service.example` | пример systemd-юнита |
+| `run.sh` | локальный запуск на macOS |
 | `requirements.txt` | зависимости |
 | `.env.example` | образец настроек без секретов |
