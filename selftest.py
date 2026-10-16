@@ -532,6 +532,40 @@ def test_ai_search_failure_returns_results():
           "нашлось по вашему вопросу" in answer and "example.org/a" in answer, answer[:200])
 
 
+def test_booking_intent_and_search_gating():
+    """Запись по тексту и когда бот сам идёт в интернет."""
+    for text in ["Запишщи меня к мастеру", "хочу записаться", "запишите меня", "когда можно приехать"]:
+        check(f"намерение записаться: {text!r}", bool(bot.BOOKING_INTENT.search(text)))
+    check("обычный вопрос не считается записью",
+          not bot.BOOKING_INTENT.search("сколько стоит русификация панели"))
+
+    update, context, log = make_update(text="хочу записаться", user_id=808)
+    bot.STATES.reset(808)
+    run(bot.handle_text(update, context))
+    check("по тексту показывается меню записи", "ЗАПИСЬ НА АКТИВАЦИЮ" in texts(log), texts(log)[:120])
+
+    saved = bot.AUTO_SEARCH
+    bot.AUTO_SEARCH = True
+    try:
+        check("разговорный вопрос не уходит в поиск", not bot.needs_web_search("Что еще ты умеешь?"))
+        check("вопрос про самого бота не уходит в поиск", not bot.needs_web_search("Что ты знаешь?"))
+        check("свежие события ищутся", bot.needs_web_search("Как сыграл Локомотив в баскетбол"))
+        check("вопрос про масло ищется", bot.needs_web_search("Какое масло лить?"))
+        check("короткое приветствие не ищется", not bot.needs_web_search("привет"))
+    finally:
+        bot.AUTO_SEARCH = saved
+
+
+def test_knowledge_base_typos():
+    """Опечатки клиентов распознаются, чужие слова — нет."""
+    answer, kind = kb.check_knowledge_base("Оуссификация")
+    check("опечатка «Оуссификация» распознана", kind == "localization" and answer, str(kind))
+    check("«русификацыя» распознана", kb.check_knowledge_base("русификацыя панели")[1] == "localization")
+    check("«легализация» не подменяется русификацией", kb.check_knowledge_base("легализация бизнеса")[0] is None)
+    check("«классификация» не подменяется", kb.check_knowledge_base("классификация")[0] is None)
+    check("«модификация» не подменяется", kb.check_knowledge_base("модификация двигателя")[0] is None)
+
+
 def test_user_registry():
     """Реестр тех, кто писал боту: по нему монитор чатов не беспокоит мастеров."""
     saved_file = bot.BOT_USERS_FILE
@@ -601,6 +635,8 @@ def main() -> int:
         test_state_reset,
         test_llm_paths,
         test_no_provider,
+        test_booking_intent_and_search_gating,
+        test_knowledge_base_typos,
         test_user_registry,
         test_rate_limit,
         test_group_and_media,

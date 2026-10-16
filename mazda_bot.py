@@ -1100,6 +1100,15 @@ def _search_query(text: str) -> Optional[str]:
     return None
 
 
+# Явное намерение записаться: «запиши меня», «хочу записаться», «запись к мастеру» и т.п.
+# «запиш\w*» ловит опечатки и формы: «Запишщи меня», «запишите», «запишусь»
+BOOKING_INTENT = re.compile(
+    r"\b(запиш\w*|записаться|запись|оформи(ть)? заявк\w*|заброниров\w*|"
+    r"когда можно приехать|во сколько можно приехать)\b", re.I)
+
+# Разговорные вопросы про самого бота: интернет тут не нужен
+META_QUESTION = re.compile(r"что\s+(?:ты\s+)?(?:ещ[её]\s+)?(?:ты\s+)?(?:умеешь|можешь|знаешь)", re.I)
+
 SEARCH_QUESTION_HINTS = (
     "цена", "стоимость", "сколько стоит", "где купить", "купить", "заказать", "отзыв", "сравн",
     "лучше", "какой", "какая", "какие", "чем отлич", "отлича", "можно ли", "подходит", "совместим",
@@ -1111,6 +1120,19 @@ SEARCH_QUESTION_HINTS = (
 URL_RE = re.compile(r"https?://[^\s)>,]+")
 
 
+# Разговорные фразы: искать по ним в интернете бессмысленно (в логах было
+# «Что еще ты умеешь?» → поиск мусора вместо простого ответа модели)
+SEARCH_SKIP_PHRASES = (
+    "что ты умеешь", "что ты можешь", "что умеешь", "кто ты", "как дела", "как ты",
+    "ты бот", "ты человек", "спасибо", "благодарю", "молодец", "норм ответы", "хорошо",
+)
+# Свежие события: по ним нужен интернет, даже если вопрос задан без знака вопроса
+SEARCH_FRESH_HINTS = (
+    "как сыграл", "счёт матча", "какой счёт", "новости", "что нового", "погода",
+    "курс доллара", "курс евро", "результат матча", "сегодня в ", "вчера был",
+)
+
+
 def needs_web_search(text: str) -> bool:
     """Нужно ли подтянуть интернет, чтобы ответить содержательно."""
     if not AUTO_SEARCH:
@@ -1118,6 +1140,12 @@ def needs_web_search(text: str) -> bool:
     value = (text or "").strip().lower()
     if len(value) < 12 and "?" not in value:
         return False
+    if any(phrase in value for phrase in SEARCH_SKIP_PHRASES) and len(value) < 60:
+        return False
+    if META_QUESTION.search(value) and len(value) < 80:
+        return False
+    if any(hint in value for hint in SEARCH_FRESH_HINTS):
+        return True
     if "?" in value:
         return True
     return any(hint in value for hint in SEARCH_QUESTION_HINTS)
@@ -1445,7 +1473,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _do_search(update, search_query)
         return
 
-    # 4. База знаний
+    # 4. Явное намерение записаться — сразу меню записи (это конверсия, терять нельзя).
+    # Раньше «Запиши меня к мастеру» уходило в ИИ и получало общий ответ.
+    if BOOKING_INTENT.search(text):
+        state.booking = None
+        logger.info("Намерение записаться по тексту — показываю меню записи")
+        await reply_long(message, "📅 ЗАПИСЬ НА АКТИВАЦИЮ\n\nВыберите дату:", booking_menu())
+        return
+
+    # 5. База знаний
     answer, kind = kb.check_knowledge_base(text)
     if answer:
         state.last_question = text
@@ -1453,7 +1489,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await reply_long(message, answer, kb_menu())
         return
 
-    # 5. ИИ: если вопрос требует фактов — сначала поиск, затем развёрнутый ответ
+    # 6. ИИ: если вопрос требует фактов — сначала поиск, затем развёрнутый ответ
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     status = None
     if needs_web_search(text):

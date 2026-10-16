@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import difflib
 import re
 
 # Стоимость услуг
@@ -191,6 +192,35 @@ def is_general_conversation(user_message: str) -> bool:
     return any(word in lowered for word in COMMON_WORDS)
 
 
+# Опечатки в ключевых словах: «оуссификация», «русификацыя», «активацыя».
+# Порог 0.85 подобран по парам: опечатки (0.870-0.909) проходят, чужие слова
+# («легализация»→«локализация» 0.818, «классификация»→«русификация» 0.750) — нет.
+FUZZY_MIN_LENGTH = 8
+FUZZY_RATIO = 0.85
+
+
+def _fuzzy_matches(text_lower: str, keyword: str) -> bool:
+    """Похоже ли слово из сообщения на ключевое слово базы.
+
+    Ключи в базе — основы («русификац», «активаци»), а клиенты пишут полные слова
+    с опечатками, поэтому ключ сравнивается с каждым «окном» слова той же длины:
+    «оуссификация» → «русификац» (0.889), «активацыя» → «активаци» (0.875).
+    Проверено, что чужие слова не проходят: «классификация», «легализация»,
+    «модификация», «стабилизация» — ни одного совпадения.
+    """
+    keyword = keyword.lower()
+    if len(keyword) < FUZZY_MIN_LENGTH or " " in keyword:
+        return False
+    for word in re.findall(r"[а-яёa-z]{6,}", text_lower):
+        if len(word) < len(keyword) - 2:
+            continue
+        for start in range(0, len(word) - len(keyword) + 1):
+            window = word[start:start + len(keyword)]
+            if difflib.SequenceMatcher(None, window, keyword).ratio() >= FUZZY_RATIO:
+                return True
+    return False
+
+
 def check_knowledge_base(user_message: str):
     """Вернуть (ответ, тип) из базы знаний или (None, None).
 
@@ -201,6 +231,12 @@ def check_knowledge_base(user_message: str):
     for rule in KNOWLEDGE_RULES:
         for keyword in rule["keywords"]:
             if _matches(lowered, keyword):
+                return rule["answer"], rule["type"]
+
+    # второй проход — с учётом опечаток: клиенты пишут «оуссификация», «русификацыя»
+    for rule in KNOWLEDGE_RULES:
+        for keyword in rule["keywords"]:
+            if _fuzzy_matches(lowered, keyword.lower()):
                 return rule["answer"], rule["type"]
     return None, None
 
