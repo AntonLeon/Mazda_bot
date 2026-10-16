@@ -532,6 +532,64 @@ def test_ai_search_failure_returns_results():
           "нашлось по вашему вопросу" in answer and "example.org/a" in answer, answer[:200])
 
 
+def test_user_registry():
+    """Реестр тех, кто писал боту: по нему монитор чатов не беспокоит мастеров."""
+    saved_file = bot.BOT_USERS_FILE
+    saved_interval = bot.USER_REGISTRY_SAVE_INTERVAL
+    saved_registry = dict(bot._known_users)
+    bot.BOT_USERS_FILE = TMP_DIR / "bot_users.json"
+    bot.USER_REGISTRY_SAVE_INTERVAL = 0
+    bot._known_users.clear()
+    try:
+        class RegistryUser:
+            def __init__(self, uid, username=None, is_bot=False):
+                self.id = uid
+                self.username = username
+                self.first_name = "Иван"
+                self.is_bot = is_bot
+
+        bot.remember_user(RegistryUser(120317642, "AntonLeontyev"))
+        bot.remember_user(RegistryUser(120317642, "@AntonLeontyev"))
+        bot.remember_user(RegistryUser(999, "botik", is_bot=True))
+        bot.remember_user(None)
+        snapshot = bot.known_users_snapshot()
+
+        check("пользователь попадает в реестр", "120317642" in snapshot, str(list(snapshot)))
+        check("счётчик обращений растёт", snapshot["120317642"]["messages"] == 2,
+              str(snapshot.get("120317642", {})))
+        check("юзернейм хранится без @", snapshot["120317642"]["username"] == "AntonLeontyev",
+              snapshot["120317642"]["username"])
+        check("боты в реестр не пишутся", "999" not in snapshot)
+        check("файл реестра закрыт правами 600",
+              stat.S_IMODE(bot.BOT_USERS_FILE.stat().st_mode) == 0o600,
+              oct(stat.S_IMODE(bot.BOT_USERS_FILE.stat().st_mode)))
+        check("файл читается заново",
+              "120317642" in json.loads(bot.BOT_USERS_FILE.read_text(encoding="utf-8")))
+
+        async def fake_post(url, headers, payload, provider):
+            return {"choices": [{"message": {"content": "Ответ ИИ"}}]}
+
+        saved_post = bot._post_json
+        bot._post_json = fake_post
+        try:
+            update, context, log = make_update(text="расскажи что-нибудь про машины", user_id=4242)
+            run(bot.handle_text(update, context))
+        finally:
+            bot._post_json = saved_post
+        check("обычное сообщение отмечает пользователя в реестре",
+              "4242" in bot.known_users_snapshot(), str(list(bot.known_users_snapshot())))
+
+        update, context, log = make_update(callback="price", user_id=5353)
+        run(bot.button_handler(update, context))
+        check("нажатие кнопки тоже отмечает пользователя",
+              "5353" in bot.known_users_snapshot(), str(list(bot.known_users_snapshot())))
+    finally:
+        bot.BOT_USERS_FILE = saved_file
+        bot.USER_REGISTRY_SAVE_INTERVAL = saved_interval
+        bot._known_users.clear()
+        bot._known_users.update(saved_registry)
+
+
 def main() -> int:
     for test in (
         test_chunking,
@@ -543,6 +601,7 @@ def main() -> int:
         test_state_reset,
         test_llm_paths,
         test_no_provider,
+        test_user_registry,
         test_rate_limit,
         test_group_and_media,
         test_needs_web_search,

@@ -517,6 +517,105 @@ def _append_record(path: Path, record: Dict[str, Any]) -> bool:
         return False
 
 
+# ============================== кто уже писал боту ==================================
+# Реестр нужен монитору чатов: если человек уже общается с ботом, мастерам о нём
+# сообщать не нужно. Монитор читает этот файл (data/bot_users.json).
+
+BOT_USERS_FILE = DATA_DIR / "bot_users.json"
+USER_REGISTRY_SAVE_INTERVAL = 30  # секунд: файл не переписывается на каждое сообщение
+MAX_REGISTRY_USERS = 5000
+
+_known_users: Dict[str, Dict[str, Any]] = {}
+_known_users_saved_at = 0.0
+
+
+def _atomic_write_json(path: Path, payload: Any) -> bool:
+    """Записать JSON атомарно (временный файл + os.replace) с правами 600."""
+    if not path.is_absolute():
+        path = (BASE_DIR / path).resolve()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+        os.chmod(path, 0o600)  # персональные данные
+        return True
+    except Exception as exc:  # noqa: BLE001 — диск может быть недоступен
+        logger.exception("Не удалось сохранить %s: %s", path, exc)
+        return False
+
+
+def load_known_users() -> Dict[str, Dict[str, Any]]:
+    """Прочитать реестр с диска (один раз за жизнь процесса)."""
+    global _known_users
+    if _known_users:
+        return _known_users
+    try:
+        raw = json.loads(BOT_USERS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return _known_users
+    except (OSError, ValueError) as exc:
+        logger.warning("Реестр пользователей %s не прочитан: %s", BOT_USERS_FILE.name, exc)
+        return _known_users
+    if isinstance(raw, dict):
+        _known_users = {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+    return _known_users
+
+
+def _save_known_users(force: bool = False) -> None:
+    """Сохранить реестр: не чаще раза в 30 секунд, кроме явного force."""
+    global _known_users_saved_at
+    if not force and time.time() - _known_users_saved_at < USER_REGISTRY_SAVE_INTERVAL:
+        return
+    registry = load_known_users()
+    if len(registry) > MAX_REGISTRY_USERS:
+        keep = sorted(registry.items(), key=lambda item: str(item[1].get("last_seen", "")), reverse=True)
+        registry = dict(keep[:MAX_REGISTRY_USERS])
+        _known_users.clear()
+        _known_users.update(registry)
+    if _atomic_write_json(BOT_USERS_FILE, registry):
+        _known_users_saved_at = time.time()
+
+
+def remember_user(user) -> None:
+    """Запомнить, что человек писал боту. Монитор чатов потом его не беспокоит."""
+    if user is None or getattr(user, "is_bot", False):
+        return
+    try:
+        user_id = int(user.id)
+    except (TypeError, ValueError):
+        return
+
+    registry = load_known_users()
+    entry = dict(registry.get(str(user_id)) or {})
+    now = now_local().strftime("%Y-%m-%d %H:%M")
+    username = (getattr(user, "username", None) or entry.get("username") or "").lstrip("@")
+    entry.update({
+        "username": username,
+        "first_name": getattr(user, "first_name", None) or entry.get("first_name") or "",
+        "last_seen": now,
+        "messages": int(entry.get("messages", 0)) + 1,
+    })
+    entry.setdefault("first_seen", now)
+    registry[str(user_id)] = entry
+    _save_known_users()
+
+
+def known_users_snapshot() -> Dict[str, Dict[str, Any]]:
+    """Реестр как есть — для диагностики и тестов."""
+    return dict(load_known_users())
+
+
 def save_booking(booking_data: Dict[str, Any]) -> bool:
     return _append_record(BOOKINGS_FILE, booking_data)
 
@@ -760,6 +859,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # /start полностью сбрасывает прежние состояния: раньше «зависшая» запись
     # продолжала перехватывать все сообщения пользователя.
     STATES.reset(user.id)
+    remember_user(user)  # отметка для монитора чатов
     logger.info("Старт у пользователя ID=%s (@%s)", user.id, user.username)
     await reply_long(
         update.effective_message,
@@ -803,6 +903,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
     state = STATES.get(user_id)
     data = query.data or ""
+    remember_user(query.from_user)
     logger.info("Нажата кнопка %r пользователем %s", data, user_id)
 
     if data == "expand_answer":
@@ -1291,6 +1392,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = update.effective_user
     if message is None or user is None or not message.text:
         return
+    remember_user(update.effective_user)  # отметка для монитора чатов
     if not _is_addressed(update, context):
         logger.info(
             "Сообщение пропущено: чат %s (%s), пользователь %s — бот отвечает в группах только "
