@@ -91,6 +91,10 @@ import bot_knowledge as kb  # noqa: E402
 import search_utils as su  # noqa: E402
 import mazda_bot as bot  # noqa: E402
 
+# В офлайн-тестах автопоиск выключен: сеть в тестах недопустима.
+# Отдельные тесты включают его сами, подменяя bot.search_web заглушкой.
+bot.AUTO_SEARCH = False
+
 
 # ------------------------------- фейковые объекты Telegram ------------------------
 
@@ -124,6 +128,9 @@ class FakeMessage:
         self.chat.log.append(("edit", text))
         self.text = text
         return self
+
+    async def delete(self):
+        self.chat.log.append(("delete", self.text or ""))
 
 
 class FakeBot:
@@ -440,6 +447,91 @@ def test_error_handler():
     check("Обработчик ошибок сообщает пользователю о сбое", "Что-то пошло не так" in texts(log), texts(log))
 
 
+def test_needs_web_search():
+    bot.AUTO_SEARCH = True
+    try:
+        check("Вопрос со знаком вопроса вызывает поиск", bot.needs_web_search("какая машина лучше?"))
+        check("Информационный вопрос без «?» тоже ищет",
+              bot.needs_web_search("расскажи про мотор мазда сх 5 подробнее"))
+        check("Короткое приветствие поиск не вызывает", not bot.needs_web_search("привет"))
+        check("Благодарность поиск не вызывает", not bot.needs_web_search("спасибо!"))
+    finally:
+        bot.AUTO_SEARCH = False
+    check("При выключенном автопоиске поиска нет", not bot.needs_web_search("какая машина лучше?"))
+
+
+def test_extract_sources():
+    results = (
+        "Заголовок 1 — https://www.drive.ru/text/1 и текст\n"
+        "Заголовок 2 — https://drive.ru/other (дубль домена)\n"
+        "Заголовок 3 — http://avtovzglyad.ru/abc, ещё текст\n"
+        "Заголовок 4 — https://za-rulem.net/x\n"
+    )
+    sources = bot.extract_sources(results)
+    check("Источники: по одному на домен", sources == ["https://www.drive.ru/text/1",
+                                                       "http://avtovzglyad.ru/abc",
+                                                       "https://za-rulem.net/x"], str(sources))
+    check("Пустая выдача не ломает разбор", bot.extract_sources("") == [])
+
+
+def test_ai_with_search():
+    user_id = 208
+    bot.STATES.reset(user_id)
+    bot.AUTO_SEARCH = True
+    used = {}
+
+    async def fake_search(query):
+        used["query"] = query
+        return "Свечи Mazda: иридиевые, ресурс 100 000 км — https://example.org/spark"
+
+    async def fake_post(url, headers, payload, provider):
+        used["messages"] = payload["messages"]
+        return {"choices": [{"message": {"content": "Подробный ответ по свечам"}}]}
+
+    saved_search, saved_post = bot.search_web, bot._post_json
+    bot.search_web, bot._post_json = fake_search, fake_post
+    try:
+        update, context, log = make_update(text="какие свечи ставить в мазда сх 5?", user_id=user_id)
+        run(bot.handle_text(update, context))
+    finally:
+        bot.search_web, bot._post_json = saved_search, saved_post
+        bot.AUTO_SEARCH = False
+
+    answer = texts(log)
+    check("Поиск вызван с текстом вопроса", used.get("query", "").startswith("какие свечи"))
+    check("Справка из поиска ушла в запрос к ИИ",
+          any("Справка из интернета" in m["content"] for m in used.get("messages", []) if m["role"] == "system"))
+    check("Ответ ИИ доставлен клиенту", "Подробный ответ по свечам" in answer, answer[:120])
+    check("В ответ добавлены источники", "example.org/spark" in answer, answer[:200])
+    check("Служебное «Ищу…» удалено после ответа", any(kind == "delete" for kind, _ in log))
+
+
+def test_ai_search_failure_returns_results():
+    user_id = 209
+    bot.STATES.reset(user_id)
+    bot.AUTO_SEARCH = True
+
+    async def fake_search(query):
+        return "Найденный текст — https://example.org/a"
+
+    async def fake_fail(url, headers, payload, provider):
+        raise bot.LLMError("nvidia: сервис недоступен (502)", provider="nvidia", status=502)
+
+    saved_search, saved_post = bot.search_web, bot._post_json
+    bot.search_web, bot._post_json = fake_search, fake_fail
+    try:
+        # вопрос вне базы знаний: иначе сработает быстрый ответ базы и ИИ не вызовется
+        update, context, log = make_update(text="какие шины лучше взять на зиму?", user_id=user_id)
+        run(bot.handle_text(update, context))
+    finally:
+        bot.search_web, bot._post_json = saved_search, saved_post
+        bot.AUTO_SEARCH = False
+
+    answer = texts(log)
+    check("При сбое ИИ клиент получает найденное, а не пустоту",
+          "нашлось по вашему вопросу" in answer and "example.org/a" in answer, answer[:200])
+
+
 def main() -> int:
     for test in (
         test_chunking,
@@ -453,6 +545,10 @@ def main() -> int:
         test_no_provider,
         test_rate_limit,
         test_group_and_media,
+        test_needs_web_search,
+        test_extract_sources,
+        test_ai_with_search,
+        test_ai_search_failure_returns_results,
         test_search_flow,
         test_master_notification_failure,
         test_error_handler,

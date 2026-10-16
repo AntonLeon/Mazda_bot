@@ -103,7 +103,10 @@ OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _env("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 
 LLM_TIMEOUT = float(_env("LLM_TIMEOUT", "120") or 120)
-LLM_MAX_TOKENS = int(_env("LLM_MAX_TOKENS", "1000") or 1000)
+LLM_MAX_TOKENS = int(_env("LLM_MAX_TOKENS", "1500") or 1500)
+# Автопоиск в интернете для вопросов: ИИ получает выдержки из поиска и отвечает подробнее
+AUTO_SEARCH = _env("AUTO_SEARCH", "1").lower() not in ("0", "false", "no", "off")
+MAX_SEARCH_SOURCES = int(_env("MAX_SEARCH_SOURCES", "3") or 3)
 RATE_LIMIT_SECONDS = float(_env("RATE_LIMIT_SECONDS", "3") or 3)
 MAX_HISTORY_MESSAGES = int(_env("MAX_HISTORY_MESSAGES", "20") or 20)
 MAX_USER_MESSAGE_CHARS = int(_env("MAX_USER_MESSAGE_CHARS", "2000") or 2000)
@@ -128,7 +131,11 @@ TELEGRAM_CHUNK = 3900  # лимит Telegram — 4096, берём с запас�
 SYSTEM_PROMPT = """Ты — помощник сервиса по Mazda CX-5 из Китая в Telegram: активация скрытых опций и русификация.
 
 КАК ОТВЕЧАТЬ:
-- По-русски, дружелюбно, коротко (до 10 строк), простым текстом.
+- По-русски, дружелюбно, простым текстом. Коротко — только на простые вопросы.
+- На содержательные вопросы (подбор, сравнение, обслуживание, диагностика, комплектации)
+  отвечай подробно: 5–15 строк, по делу, без воды и повторов вопроса.
+- Структура: сначала прямой ответ одной фразой, затем детали списком «•» и, если уместно,
+  что проверить на машине.
 - БЕЗ markdown-разметки: не используй **, ##, __ и подобное. Списки — цифрами или знаком «•».
 - На общие вопросы про Mazda CX-5 (моторы, коробки, комплектации, бензин, свечи, расход,
   обслуживание, зимняя эксплуатация) отвечай сам из своих знаний, по существу и с пользой.
@@ -141,6 +148,13 @@ SYSTEM_PROMPT = """Ты — помощник сервиса по Mazda CX-5 из
 - Про топливо не настаивай на конкретном октановом числе: скажи, что для китайской версии
   обычно 92 и выше, и посоветуй свериться с наклейкой на лючке бензобака.
 - Не уверен в конкретной цифре — скажи «примерно», но не отказывайся отвечать.
+
+ЕСЛИ НИЖЕ ДАНА СПРАВКА ИЗ ИНТЕРНЕТА:
+- Опирайся на неё как на источник фактов: выбирай то, что относится к вопросу, отбрасывай
+  рекламу, магазины и нерелевантное, обобщай своими словами.
+- Данные расходятся — так и скажи, не выбирай одно наугад.
+- Цены и сроки из интернета НИКОГДА не выдавай за наши услуги: наши цены только те, что выше.
+- Если в справке нет ответа — отвечай из своих знаний и честно скажи, что уточнишь у мастера.
 
 ЧТО НЕ ВЫДУМЫВАТЬ (только про наши услуги): цены, сроки и совместимость конкретной машины.
 Наши цены: активация любого количества скрытых опций — 1 600 ₽; повторное обращение — 700 ₽;
@@ -402,6 +416,7 @@ class UserState:
     history: List[Dict[str, str]] = field(default_factory=list)
     booking: Optional[BookingDraft] = None
     contact: Optional[ContactDraft] = None
+    last_question: str = ""
     last_message_ts: float = 0.0
     last_rate_warning_ts: float = 0.0
     updated_at: float = field(default_factory=time.time)
@@ -790,6 +805,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data = query.data or ""
     logger.info("Нажата кнопка %r пользователем %s", data, user_id)
 
+    if data == "expand_answer":
+        question = (state.last_question or "").strip()
+        if not question:
+            await edit_or_send(query, "Не помню вопрос — напишите его заново 🙂", main_menu())
+            return
+        await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.TYPING)
+        await edit_or_send(query, f"🔎 Разбираюсь подробнее: {question[:120]}", back_button())
+        await _answer_with_ai(update, context, state, question)
+        return
+
     if data == "back_main":
         state.booking = None
         state.contact = None
@@ -974,6 +999,43 @@ def _search_query(text: str) -> Optional[str]:
     return None
 
 
+SEARCH_QUESTION_HINTS = (
+    "цена", "стоимость", "сколько стоит", "где купить", "купить", "заказать", "отзыв", "сравн",
+    "лучше", "какой", "какая", "какие", "чем отлич", "отлича", "можно ли", "подходит", "совместим",
+    "адрес", "телефон", "доставка", "гарантия", "сервис", "масло", "запчаст", "расход", "пробег",
+    "комплектац", "мотор", "двигател", "коробк", "акпп", "свечи", "бензин", "топлив", "зимн",
+    "резина", "шины", "тормоз", "подвеск", "ошибк", "горит", "не работает", "инструкц", "руководств",
+)
+
+URL_RE = re.compile(r"https?://[^\s)>,]+")
+
+
+def needs_web_search(text: str) -> bool:
+    """Нужно ли подтянуть интернет, чтобы ответить содержательно."""
+    if not AUTO_SEARCH:
+        return False
+    value = (text or "").strip().lower()
+    if len(value) < 12 and "?" not in value:
+        return False
+    if "?" in value:
+        return True
+    return any(hint in value for hint in SEARCH_QUESTION_HINTS)
+
+
+def extract_sources(results: str) -> List[str]:
+    """Ссылки из выдачи поиска — по одной на домен, чтобы не дублировать."""
+    sources: List[str] = []
+    seen = set()
+    for url in URL_RE.findall(results or ""):
+        url = url.rstrip(".,;")
+        host = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
+        if host in seen:
+            continue
+        seen.add(host)
+        sources.append(url)
+    return sources[:MAX_SEARCH_SOURCES]
+
+
 async def _handle_booking_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                message_text: str, state: UserState) -> None:
     draft = state.booking
@@ -1095,11 +1157,30 @@ async def _handle_contact_text(update: Update, context: ContextTypes.DEFAULT_TYP
     await reply_long(update.effective_message, "\n".join(lines), main_menu())
 
 
-async def _recommend_llm(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                         state: UserState, text: str) -> None:
+async def _safe_delete(message) -> None:
+    """Удалить служебное сообщение, не падая, если его уже нет."""
+    try:
+        await message.delete()
+    except TelegramError:
+        pass
+
+
+def kb_menu() -> InlineKeyboardMarkup:
+    """Меню под ответом базы знаний: можно попросить развёрнутый ответ с поиском."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔎 Развёрнутый ответ (поиск в интернете)", callback_data="expand_answer")],
+        [InlineKeyboardButton("◀️ В главное меню", callback_data="back_main")],
+    ])
+
+
+async def _answer_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                          state: UserState, question: str, status_message=None) -> None:
+    """Ответ ИИ: при необходимости сначала ищем в интернете, затем отвечаем развёрнуто."""
     provider = detect_provider()
     if provider is None:
         logger.error("ИИ недоступен: не задан ни один ключ. Запустите python check_keys.py")
+        if status_message is not None:
+            await _safe_delete(status_message)
         await reply_long(
             update.effective_message,
             "⚠️ ИИ сейчас недоступен: не настроен ключ ни одного провайдера.\n\n"
@@ -1109,11 +1190,37 @@ async def _recommend_llm(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     started = time.time()
-    user_text = text.strip()[:MAX_USER_MESSAGE_CHARS]
+    user_text = question.strip()[:MAX_USER_MESSAGE_CHARS]
     model_name = {"nvidia": NVIDIA_MODEL, "yandex": YANDEX_MODEL, "openrouter": OPENROUTER_MODEL}.get(provider, "?")
     logger.info("Запрос к ИИ: провайдер %s, модель %s", provider, model_name)
+
+    # 1. Справка из интернета: ИИ отвечает подробнее и по фактам, а не только по памяти
+    snippets = ""
+    sources: List[str] = []
+    if needs_web_search(user_text):
+        logger.info("Автопоиск в интернете: %r", user_text[:60])
+        results = await search_web(user_text)
+        if results == "FORBIDDEN":
+            results = None
+        if not results:
+            results = await search_web_fallback(user_text)
+            if results == "FORBIDDEN":
+                results = None
+        if results:
+            snippets = results
+            sources = extract_sources(results)
+            logger.info("Поиск дал %d символов, источников %d", len(results), len(sources))
+        else:
+            logger.info("Поиск ничего не дал — отвечаю по знаниям модели")
+
     messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += state.history[-MAX_HISTORY_MESSAGES:]
+    if snippets:
+        messages.append({
+            "role": "system",
+            "content": "Справка из интернета по вопросу пользователя (может содержать рекламу, "
+                       "устаревшее и неточное — отбирай факты по теме):\n\n" + snippets,
+        })
     messages.append({"role": "user", "content": user_text})
 
     try:
@@ -1121,6 +1228,16 @@ async def _recommend_llm(update: Update, context: ContextTypes.DEFAULT_TYPE,
     except LLMError as exc:
         # Технические детали (статус, отпечаток ключа) остаются в логе: клиент их видеть не должен
         logger.error("LLM (%s) недоступен: %s", provider, exc)
+        if status_message is not None:
+            await _safe_delete(status_message)
+        if snippets:
+            # ИИ сломался, но найденное отдаём: вопрос не должен остаться без ответа
+            await reply_long(
+                update.effective_message,
+                "⚠️ ИИ сейчас отвечает с перебоями, но вот что нашлось по вашему вопросу:\n\n" + snippets,
+                main_menu(),
+            )
+            return
         await reply_long(
             update.effective_message,
             "⚠️ ИИ временно недоступен.\n\n"
@@ -1129,10 +1246,16 @@ async def _recommend_llm(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return
 
+    if sources:
+        answer += "\n\n🔗 Источники:\n" + "\n".join(f"• {url}" for url in sources)
+
     state.history.append({"role": "user", "content": user_text})
     state.history.append({"role": "assistant", "content": answer})
     state.history = state.history[-MAX_HISTORY_MESSAGES:]
-    logger.info("ИИ ответил за %.1f с, %d символов", time.time() - started, len(answer))
+    if status_message is not None:
+        await _safe_delete(status_message)
+    logger.info("ИИ ответил за %.1f с, %d символов%s", time.time() - started, len(answer),
+                " (с поиском)" if snippets else "")
     await reply_long(update.effective_message, answer, main_menu())
 
 
@@ -1223,13 +1346,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 4. База знаний
     answer, kind = kb.check_knowledge_base(text)
     if answer:
+        state.last_question = text
         logger.info("Ответ из базы знаний (тип %s), ИИ не вызывался", kind)
-        await reply_long(message, answer, main_menu())
+        await reply_long(message, answer, kb_menu())
         return
 
-    # 5. ИИ
+    # 5. ИИ: если вопрос требует фактов — сначала поиск, затем развёрнутый ответ
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    await _recommend_llm(update, context, state, text)
+    status = None
+    if needs_web_search(text):
+        status = await message.reply_text("🔎 Ищу информацию и готовлю подробный ответ…")
+    await _answer_with_ai(update, context, state, text, status_message=status)
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
